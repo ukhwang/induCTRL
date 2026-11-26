@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f3">
+  <title>induCTRL · 교반 모니터</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="top-inner">
+      <a class="brand" href="#home" aria-label="induCTRL 홈"><span class="brand-mark" aria-hidden="true">≋</span>indu<span>CTRL</span></a>
+      <nav aria-label="주 메뉴">
+        <a href="#home" data-page="home">홈</a>
+        <a href="#live" data-page="live">실시간</a>
+        <a href="#compare" data-page="compare">결과 비교</a>
+        <a href="#replay" data-page="replay">녹화 재생</a>
+      </nav>
+      <span class="mode" hidden></span>
+    </div>
+  </header>
+  <main id="main" class="shell" aria-busy="true">
+    <p class="placeholder" role="status">교반 데이터를 불러오는 중입니다.</p>
+  </main>
+  <footer class="shell footer"><span>induCTRL</span><span id="data-mode"></span></footer>
+</body>
+</html>

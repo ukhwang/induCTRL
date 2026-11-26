@@ -1,0 +1,117 @@
+{
+  "_note": "미확인 값은 null, 검증 플래그는 false. 최상위 function_code/address_zero_based/register_count/mapping_verified/interval_seconds 는 기존 main.py(읽기 전용 로거) 전용이며 stirctl.py 는 channels/decision 값을 씁니다.",
+  "database": "data/inductrl_readings.sqlite3",
+
+  "host": "192.168.10.20",
+  "port": 502,
+  "unit_id": 1,
+  "read_timeout_s": 0.1,
+  "write_timeout_s": 1.0,
+  "cycle_budget_s": 0.4,
+
+  "function_code": 4,
+  "address_zero_based": null,
+  "register_count": 2,
+  "mapping_verified": false,
+  "interval_seconds": 1.0,
+
+  "channels": {
+    "turbidity_top": {
+      "address_zero_based": null,
+      "register_type": null,
+      "data_type": null,
+      "word_order": null,
+      "scale": null,
+      "offset": null,
+      "unit": null,
+      "valid_min": null,
+      "valid_max": null,
+      "stale_seconds": 2.0,
+      "mapping_verified": false
+    },
+    "turbidity_bottom": {
+      "address_zero_based": null,
+      "register_type": null,
+      "data_type": null,
+      "word_order": null,
+      "scale": null,
+      "offset": null,
+      "unit": null,
+      "valid_min": null,
+      "valid_max": null,
+      "stale_seconds": 2.0,
+      "mapping_verified": false
+    },
+    "conductivity": {
+      "address_zero_based": null,
+      "register_type": null,
+      "data_type": null,
+      "word_order": null,
+      "scale": null,
+      "offset": null,
+      "unit": null,
+      "valid_min": null,
+      "valid_max": null,
+      "stale_seconds": 2.0,
+      "mapping_verified": false
+    },
+    "rotation_counter": {
+      "address_zero_based": null,
+      "register_type": null,
+      "data_type": null,
+      "word_order": null,
+      "scale": null,
+      "offset": null,
+      "unit": "count",
+      "valid_min": null,
+      "valid_max": null,
+      "stale_seconds": 2.0,
+      "mapping_verified": false,
+      "pulses_per_rev": null,
+      "counter_bits": null,
+      "rpm_window_seconds": 2.0,
+      "max_rpm": null
+    }
+  },
+
+  "decision": {
+    "interval_seconds": 0.5,
+    "window_seconds": 10.0,
+    "min_stir_seconds": 30.0,
+    "hold_seconds": 3.0,
+    "min_coverage": 0.9,
+    "running_rpm_min": null,
+    "running_confirm_seconds": 2.0,
+    "thresholds_verified": false,
+    "saltwater": {
+      "conductivity_min": null,
+      "conductivity_max": null,
+      "conductivity_max_range": null
+    },
+    "caco3": {
+      "turbidity_top_min": null,
+      "turbidity_top_max": null,
+      "turbidity_bottom_min": null,
+      "turbidity_bottom_max": null,
+      "turbidity_max_range": null,
+      "top_bottom_max_diff": null
+    }
+  },
+
+  "actuator": {
+    "live_enabled": false,
+    "stop_coil_address": null,
+    "stop_value": null,
+    "stop_confirm_timeout_s": 10.0,
+    "stopped_rpm_max": null,
+    "stop_hold_seconds": 2.0,
+    "verified": false
+  },
+
+  "stop_feedback": {
+    "register_type": null,
+    "address": null,
+    "stopped_value": null,
+    "verified": false
+  }
+}

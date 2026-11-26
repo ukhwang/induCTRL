@@ -1,0 +1,22 @@
+[Unit]
+Description=InduCTRL monitoring data uploader
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=stir-upload
+Group=stir-upload
+StateDirectory=stir-upload
+EnvironmentFile=/etc/stir-upload.env
+WorkingDirectory=/opt/inductrl-webapp
+ExecStart=/opt/inductrl-webapp/.venv/bin/python /opt/inductrl-webapp/mic/upload.py --db /opt/stirctl/data/inductrl_readings.sqlite3 --state /var/lib/stir-upload/checkpoint.json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
