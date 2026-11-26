@@ -1,4 +1,5 @@
 import { drawChart } from './chart.js';
+import { prefersReducedMotion, tweenNumber } from './ui.js';
 
 const main = document.querySelector('#main');
 const tabs = [...document.querySelectorAll('[data-page]')];
@@ -118,9 +119,41 @@ function eventList(events) {
       <time class="event-time">${Number.isFinite(elapsed_s) ? formatTime(elapsed_s) : '—'}</time></li>`).join('')}</ol>`;
 }
 
-function card(label, mark, value, unit, details) {
+/** 값을 data 속성으로 잡아 두고 매 폴링마다 숫자만 부드럽게 갱신하는 지표 카드. */
+function statCard(key, label, mark, unit) {
   return `<article class="card"><span class="label"><span class="metric-mark" aria-hidden="true">${mark}</span>${label}</span>
-    <b>${value}</b>${unit ? `<span class="unit">${escapeHTML(unit)}</span>` : ''}<small>${escapeHTML(details)}</small></article>`;
+    <b data-stat="${key}">—</b>${unit ? `<span class="unit">${escapeHTML(unit)}</span>` : ''}<small data-stat-note="${key}"></small></article>`;
+}
+
+let statsSignature = '';
+
+function renderStats(keys, live, latest) {
+  const container = document.querySelector('#stats');
+  if (!container) return;
+  const signature = keys.join('|');
+  if (signature !== statsSignature || container.childElementCount !== keys.length + 1) {
+    statsSignature = signature;
+    container.innerHTML = keys.map((key) => {
+      const metric = displayMetric(key, live);
+      return statCard(key, metric.label, metric.mark, metric.unit);
+    }).join('') + statCard('elapsed', '경과시간', '◷', '');
+  }
+  for (const key of keys) {
+    const metric = displayMetric(key, live);
+    const value = isMock() ? latest?.[key] : live.latest[key]?.value;
+    const status = live.latest?.[key]?.status;
+    const details = Number.isFinite(value) ? (isMock() ? metric.detail : 'MIC 센서 기록')
+      : status ? `유효한 측정값 없음 · ${status}` : '유효한 측정값 없음';
+    tweenNumber(container.querySelector(`[data-stat="${key}"]`), value, { digits: metric.precision });
+    const note = container.querySelector(`[data-stat-note="${key}"]`);
+    if (note && note.textContent !== details) note.textContent = details;
+  }
+  const elapsed = container.querySelector('[data-stat="elapsed"]');
+  const elapsedText = formatTime(live.elapsed_s);
+  if (elapsed && elapsed.textContent !== elapsedText) elapsed.textContent = elapsedText;
+  const elapsedNote = container.querySelector('[data-stat-note="elapsed"]');
+  const elapsedDetail = isMock() ? `목표 ${formatTime(live.duration_s)}` : '수집 시작 기준';
+  if (elapsedNote && elapsedNote.textContent !== elapsedDetail) elapsedNote.textContent = elapsedDetail;
 }
 
 function entriesPanel(id) {
@@ -276,15 +309,7 @@ function updateLive() {
       : '판정 기록 대기';
   }
   const keys = isMock() ? micMetrics : live.metrics;
-  document.querySelector('#stats').innerHTML = keys.map((key) => {
-    const metric = displayMetric(key, live);
-    const value = isMock() ? latest?.[key] : live.latest[key]?.value;
-    const status = live.latest?.[key]?.status;
-    const details = Number.isFinite(value) ? (isMock() ? metric.detail : 'MIC 센서 기록')
-      : status ? `유효한 측정값 없음 · ${status}` : '유효한 측정값 없음';
-    return card(metric.label, metric.mark, valueText(value, metric), metric.unit, details);
-  }).join('') + card('경과시간', '◷', formatTime(live.elapsed_s), '',
-    isMock() ? `목표 ${formatTime(live.duration_s)}` : '수집 시작 기준');
+  renderStats(keys, live, latest);
   document.querySelector('#live-events').innerHTML = eventList(live.events);
   updateEntries('live-entries', live);
   refreshChart();
@@ -298,6 +323,7 @@ function renderLive() {
       <p class="panel placeholder">수신한 배치가 없습니다.</p>`;
     return;
   }
+  statsSignature = '';
   main.innerHTML = `${header(title, '현재 배치의 센서 값과 교반 완료 여부를 확인하세요.', true)}
     <section class="run-bar" aria-label="현재 배치">
       <div class="batch-info"><span class="label">현재 배치</span><strong class="batch-code">${escapeHTML(snapshot.live.id)}</strong></div>
@@ -498,10 +524,38 @@ function renderPage() {
     if (tab.dataset.page === page) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   }
+  positionNavInk();
   if (!snapshot) return;
   if (page === 'compare') renderCompare();
   else if (page === 'replay') renderReplay();
   else renderLive();
+  enterPage();
+}
+
+const navInk = document.querySelector('.nav-ink');
+
+/** 현재 탭 표시를 링크 위치로 옮깁니다. transform/width 만 바뀌어 레이아웃을 건드리지 않습니다. */
+function positionNavInk() {
+  if (!navInk) return;
+  const active = document.querySelector('nav a[aria-current]');
+  if (!active || !active.offsetWidth) {
+    navInk.style.opacity = '0';
+    return;
+  }
+  navInk.style.opacity = '1';
+  navInk.style.width = `${active.offsetWidth}px`;
+  navInk.style.transform = `translate3d(${active.offsetLeft}px, 0, 0)`;
+}
+
+/** 화면이 바뀔 때 카드가 순서대로 떠오르게 합니다. */
+function enterPage() {
+  const nodes = [...main.children];
+  for (const [index, node] of nodes.entries()) {
+    node.classList.remove('page-in');
+    node.style.setProperty('--i', String(index));
+  }
+  void main.offsetWidth;   // 스타일을 한 번 확정해 애니메이션을 다시 시작합니다.
+  for (const node of nodes) node.classList.add('page-in');
 }
 
 main.addEventListener('change', (event) => {
@@ -561,7 +615,10 @@ main.addEventListener('click', ({ target }) => {
 window.addEventListener('hashchange', () => {
   stopReplay();
   renderPage();
+  window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
 });
+window.addEventListener('resize', positionNavInk, { passive: true });
+document.fonts?.ready.then(positionNavInk).catch(() => {});
 new ResizeObserver(refreshChart).observe(main);
 
 async function poll() {

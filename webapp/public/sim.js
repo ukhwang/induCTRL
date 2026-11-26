@@ -9,6 +9,7 @@
  */
 import { SimEngine, normalizeConfig, INTERVAL_S } from './engine.js';
 import { drawChart } from './chart.js';
+import { mountSegments, paintSegments, prefersReducedMotion, tweenNumber } from './ui.js';
 
 const root = document.querySelector('#sim');
 
@@ -27,6 +28,14 @@ const STATUS_TEXT = {
   MET_AFTER_CANDIDATE: '완료 후보 이후',
   STOPPED: '정지 확인',
 };
+
+/** 계측 타일 정의. 화면을 한 번만 만들고 숫자만 부드럽게 갱신합니다. */
+const TILE_DEFS = [
+  { key: 'rpm', label: '회전수', unit: 'RPM', digits: 0 },
+  { key: 'power_w', label: '축동력', unit: 'W', digits: 1 },
+  { key: 'energy_wh', label: '누적 에너지', unit: 'Wh', digits: 3 },
+  { key: 'cv_pct', label: '잔여 불균일', unit: '%', digits: 2 },
+];
 
 function init() {
   const el = {
@@ -51,6 +60,9 @@ function init() {
     chartPowerLabel: root.querySelector('#sim-chart-power-label'),
     events: root.querySelector('#sim-events'),
     result: root.querySelector('#sim-result'),
+    mix: root.querySelector('#sim-mix'),
+    mixFill: root.querySelector('#sim-mix-fill'),
+    mixOut: root.querySelector('#sim-mix-out'),
   };
 
   const state = {
@@ -112,11 +124,14 @@ function init() {
   async function startExperiment() {
     if (state.busy) return;
     const config = readForm();
+    const restarting = !el.result.hidden;
     state.config = config;
     state.busy = true;
     resetRun();
     setBadge('준비 중', 'pending');
     el.start.disabled = true;
+    el.start.setAttribute('aria-busy', 'true');
+    el.start.textContent = '준비 중…';
     el.note.textContent = '실험을 준비하고 있습니다.';
     let started = false;
     try {
@@ -147,6 +162,9 @@ function init() {
     }
     el.stop.disabled = false;
     state.busy = false;
+    el.start.removeAttribute('aria-busy');
+    el.start.textContent = '실험 시작';
+    if (restarting) root.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
   }
 
   function startLocal(note) {
@@ -192,12 +210,15 @@ function init() {
 
   async function pollServer() {
     try {
-      const [statusResponse, batchResponse] = await Promise.all([
-        fetch('/api/sim/status', { cache: 'no-store', signal: AbortSignal.timeout(4000) }),
-        fetch(`/api/batch?id=${encodeURIComponent(state.batchId)}`, { cache: 'no-store', signal: AbortSignal.timeout(4000) }),
-      ]);
+      const statusResponse = await fetch('/api/sim/status', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
       const status = await statusResponse.json();
-      const batch = batchResponse.ok ? await batchResponse.json() : null;
+      // 실행 직후에는 배치 행이 아직 없습니다. 그때 /api/batch 를 부르면 404 가 콘솔에 남습니다.
+      let batch = null;
+      if (status?.batch) {
+        const batchResponse = await fetch(`/api/batch?id=${encodeURIComponent(state.batchId)}`,
+          { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+        if (batchResponse.ok) batch = await batchResponse.json();
+      }
       present(serverView(status, batch));
       if (status.running) {
         state.pollTimer = setTimeout(pollServer, 500);
@@ -277,28 +298,65 @@ function init() {
   }
 
   /* ── 그리기: 계측·차트·결과 ─────────────────────────────────────────── */
-  function present(view) {
+  const tileNodes = new Map();
+  let tilesBuilt = false;
+  let eventSignature = '';
+  let chartSignature = '';
+  let chartFrame = 0;
+
+  function buildTiles() {
+    el.tiles.innerHTML = TILE_DEFS.map((def) =>
+      `<div class="sim-tile"><span class="label">${def.label}</span><b data-tile="${def.key}">—</b><span class="unit">${def.unit}</span></div>`).join('');
+    tileNodes.clear();
+    for (const node of el.tiles.querySelectorAll('[data-tile]')) tileNodes.set(node.dataset.tile, node);
+    tilesBuilt = true;
+  }
+
+  /**
+   * 실험이 끝나면 계측 타일·게이지를 '판정 시점' 값으로 고정합니다.
+   * 자동 정지 뒤에는 교반이 멈춰 혼합도가 다시 떨어지므로, 그 값을 그대로 보여 주면
+   * 결과 카드(0.09 %)와 타일(4 %대)이 서로 다른 말을 하게 됩니다.
+   */
+  function frozenView(view) {
+    if (!view || !view.finished) return view;
+    const point = (view.control_mode === 'fixed' ? view.total : view.result) ?? view.total;
+    if (!point) return view;
+    return {
+      ...view,
+      energy_wh: point.energy_wh ?? view.energy_wh,
+      cv_pct: point.cv_pct ?? view.cv_pct,
+      mix: point.mix ?? view.mix,
+    };
+  }
+
+  function present(rawView) {
+    const view = frozenView(rawView);
     state.view = view;
     if (!view) return;
+    if (!tilesBuilt) buildTiles();
+    for (const def of TILE_DEFS) {
+      tweenNumber(tileNodes.get(def.key), view[def.key], { digits: def.digits });
+    }
+    updateMix(view);
     const decider = view.material === 'saltwater' ? 'mS/cm 전도도' : 'NTU 탁도';
-    el.tiles.innerHTML = [
-      tile('회전수', fmt(view.rpm, 0), 'RPM'),
-      tile('축동력', fmt(view.power_w, 1), 'W'),
-      tile('누적 에너지', fmt(view.energy_wh, 3), 'Wh'),
-      tile('잔여 불균일', fmt(view.cv_pct, 2), '%'),
-    ].join('');
-    el.chartSensorLabel.textContent = `판정 변수 · ${decider}`;
-    el.chartPowerLabel.textContent = '누적 에너지 · Wh';
-    drawSensorChart(view);
-    drawPowerChart(view);
-    el.elapsed.textContent = clock(view.elapsed_s ?? 0);
+    const sensorLabel = `판정 변수 · ${decider}`;
+    if (el.chartSensorLabel.textContent !== sensorLabel) el.chartSensorLabel.textContent = sensorLabel;
+    const elapsed = clock(view.elapsed_s ?? 0);
+    if (el.elapsed.textContent !== elapsed) el.elapsed.textContent = elapsed;
     setBadge(badgeOf(view), view.finished ? 'done' : view.running ? 'live' : 'idle');
+    setLocked(Boolean(view.running && !view.finished));
     renderEvents(view);
+    scheduleCharts(view);
     if (view.running && !view.finished) el.start.disabled = true;
   }
 
-  function tile(label, value, unit) {
-    return `<div class="sim-tile"><span class="label">${label}</span><b>${value}</b><span class="unit">${unit}</span></div>`;
+  /** 혼합도 게이지. scaleX 만 움직여 레이아웃을 건드리지 않습니다. */
+  function updateMix(view) {
+    const mix = Math.min(1, Math.max(0, Number.isFinite(view.mix) ? view.mix : 0));
+    el.mixFill.style.transform = `scaleX(${mix.toFixed(3)})`;
+    const percent = Math.round(mix * 100);
+    if (el.mixOut.textContent !== `${percent}%`) el.mixOut.textContent = `${percent}%`;
+    if (el.mix.getAttribute('aria-valuenow') !== String(percent)) el.mix.setAttribute('aria-valuenow', String(percent));
   }
 
   function badgeOf(view) {
@@ -312,19 +370,51 @@ function init() {
   }
 
   function setBadge(text, kind) {
+    const next = kind ?? 'idle';
+    if (el.badge.textContent === text && el.badge.dataset.kind === next) return;
     el.badge.textContent = text;
-    el.badge.dataset.kind = kind ?? 'idle';
+    el.badge.dataset.kind = next;
+  }
+
+  /** 실행 중에는 투입량·모드·속도를 잠급니다. 바꾸면 다음 실험부터 적용되기 때문입니다. */
+  let locked = false;
+  function setLocked(value) {
+    if (locked === value) return;
+    locked = value;
+    for (const node of el.form.querySelectorAll('input, .segment button')) node.disabled = value;
+    el.form.classList.toggle('is-locked', value);
   }
 
   function renderEvents(view) {
     const events = (view.events ?? []).slice(-5).reverse();
+    const signature = events.map((event) => `${event.elapsed_s}:${event.code ?? event.title}`).join('|');
+    if (signature === eventSignature) return;
+    eventSignature = signature;
     if (!events.length) {
-      el.events.innerHTML = '<li class="muted">아직 이벤트가 없습니다.</li>';
+      el.events.innerHTML = '<li class="muted">실험을 시작하면 판정 이벤트가 쌓입니다.</li>';
       return;
     }
     el.events.innerHTML = events.map((event) => `<li><span class="dot" aria-hidden="true"></span>
       <span>${escapeHTML(event.title ?? event.code)}</span>
       <time>${clock(event.elapsed_s ?? 0)}</time></li>`).join('');
+  }
+
+  /** 계측 데이터가 늘었을 때만, 프레임당 최대 한 번 차트를 다시 그립니다. */
+  function scheduleCharts(view, force = false) {
+    state.pendingView = view;
+    const signature = view
+      ? `${view.samples?.length ?? 0}:${view.samples?.at(-1)?.elapsed_s ?? 0}:${view.history?.length ?? 0}:${view.history?.at(-1)?.elapsed_s ?? 0}`
+      : 'empty';
+    if (!force && signature === chartSignature && !chartFrame) return;
+    chartSignature = signature;
+    if (chartFrame) return;
+    chartFrame = requestAnimationFrame(() => {
+      chartFrame = 0;
+      const target = state.pendingView;
+      if (!target) return;
+      drawSensorChart(target);
+      drawPowerChart(target);
+    });
   }
 
   function drawSensorChart(view) {
@@ -337,17 +427,31 @@ function init() {
       series.push({ color: '#36745e', samples: samples.map((s) => ({ elapsed_s: s.elapsed_s, v: s.turbidity_top })) });
       series.push({ color: '#b84b23', samples: samples.map((s) => ({ elapsed_s: s.elapsed_s, v: s.turbidity_bottom })) });
     }
+    const unit = view.material === 'saltwater' ? 'mS/cm' : 'NTU';
+    el.chartSensor.setAttribute('aria-label', `판정 변수 ${unit} 경과시간 그래프`);
     drawChart(el.chartSensor, series.map((item) => ({ ...item, samples: item.samples.filter((s) => Number.isFinite(s.v)) })),
-      { key: 'v', unit: view.material === 'saltwater' ? 'mS/cm' : 'NTU', min: 0, max: end, formatTime: clock });
+      { key: 'v', unit, min: 0, max: end, formatTime: clock,
+        emptyText: view.finished ? '유효한 측정값 없음' : '실험을 시작하면 그래프가 나타납니다' });
   }
 
   function drawPowerChart(view) {
     const history = (view.history ?? []).filter((point) => Number.isFinite(point.elapsed_s));
     const end = Math.max(10, history.at(-1)?.elapsed_s ?? 0);
+    el.chartPower.setAttribute('aria-label', '누적 에너지 Wh 경과시간 그래프');
     drawChart(el.chartPower, [{
       color: '#2c5544',
       samples: history.map((point) => ({ elapsed_s: point.elapsed_s, v: point.energy_wh })),
-    }], { key: 'v', unit: 'Wh', min: 0, max: end, formatTime: clock });
+    }], { key: 'v', unit: 'Wh', min: 0, max: end, formatTime: clock,
+      emptyText: view.finished ? '유효한 측정값 없음' : '실험을 시작하면 그래프가 나타납니다' });
+  }
+
+  function resetPanels() {
+    if (!tilesBuilt) buildTiles();
+    for (const def of TILE_DEFS) tweenNumber(tileNodes.get(def.key), NaN);
+    el.events.innerHTML = '<li class="muted">실험을 시작하면 판정 이벤트가 쌓입니다.</li>';
+    eventSignature = '';
+    chartSignature = '';
+    updateMix({ mix: 0 });
   }
 
   function resetRun() {
@@ -356,31 +460,33 @@ function init() {
     clearTimeout(state.pollTimer);
     if (state.stepTimer) clearInterval(state.stepTimer);
     state.stepTimer = null;
+    setLocked(false);
     el.result.hidden = true;
     el.result.innerHTML = '';
     el.start.disabled = false;
     el.stop.disabled = true;
     el.note.textContent = '';
-    el.tiles.innerHTML = '';
-    el.events.innerHTML = '';
+    resetPanels();
+    el.chartSensorLabel.textContent = '판정 변수';
+    el.chartPowerLabel.textContent = '누적 에너지 · Wh';
     tank.reset();
     renderPlaceholder();
   }
 
   function renderPlaceholder() {
-    const context = el.chartSensor.getContext('2d');
-    context?.clearRect(0, 0, el.chartSensor.width, el.chartSensor.height);
-    el.chartPower.getContext('2d')?.clearRect(0, 0, el.chartPower.width, el.chartPower.height);
-    el.chartSensorLabel.textContent = '판정 변수';
-    el.chartPowerLabel.textContent = '누적 에너지 · Wh';
+    const options = { key: 'v', min: 0, max: 10, formatTime: clock, emptyText: '실험을 시작하면 그래프가 나타납니다' };
+    drawChart(el.chartSensor, [], { ...options, unit: 'mS/cm' });
+    drawChart(el.chartPower, [], { ...options, unit: 'Wh' });
   }
 
   function finishRun(manual = false) {
     const view = state.view;
     el.start.disabled = false;
     el.stop.disabled = true;
+    setLocked(false);
     clearTimeout(state.pollTimer);
     if (!view) return;
+    if (!manual) el.note.textContent = '실험이 끝났습니다. 아래 결과 카드에서 절감률과 판정 시점을 확인하세요.';
     renderResult(view, manual);
   }
 
@@ -405,6 +511,12 @@ function init() {
       [fixed ? '에너지 (누적)' : '에너지 (판정 시점)', `${fmt(energy, 3)} Wh`],
       ['잔여 불균일 (CV)', `${fmt(point.cv_pct, 2)} %`],
     ];
+    const ratio = baseline && baseline > 0 ? Math.max(0.02, Math.min(1, energy / baseline)) : 0;
+    const bars = baseline && baseline > 0 ? `
+      <div class="sim-bars">
+        <div class="sim-bar"><span>FIXED 기준</span><span class="sim-bar-track"><i style="--w:1"></i></span><b>${baseline.toFixed(2)} Wh</b></div>
+        <div class="sim-bar is-run"><span>이번 실험</span><span class="sim-bar-track"><i style="--w:${ratio.toFixed(4)}"></i></span><b>${energy.toFixed(3)} Wh</b></div>
+      </div>` : '';
     el.result.hidden = false;
     el.result.innerHTML = `
       <div class="sim-result-head">
@@ -412,10 +524,11 @@ function init() {
           <span class="label">실험 결과 · ${escapeHTML(LABELS[view.material] ?? view.material ?? '')}</span>
           <h3>${escapeHTML(finishedText)}</h3>
         </div>
-        ${saved === null ? '' : `<div class="saving"><b>${saved.toFixed(0)}%</b><span>FIXED 기준 대비<br>에너지 절감</span></div>`}
+        ${saved === null ? '' : `<div class="saving"><b>0%</b><span>FIXED 기준 대비<br>에너지 절감</span></div>`}
       </div>
-      <dl class="sim-result-grid">${rows.map(([key, value]) =>
-        `<div><dt>${key}</dt><dd>${escapeHTML(value)}</dd></div>`).join('')}</dl>
+      <dl class="sim-result-grid">${rows.map(([key, value], index) =>
+        `<div style="--i:${index}"><dt>${key}</dt><dd>${escapeHTML(value)}</dd></div>`).join('')}</dl>
+      ${bars}
       <p class="sim-result-note">${baseline
         ? `같은 투입량의 FIXED 기준 운전은 ${baseline.toFixed(2)} Wh 로 계산됩니다(고정 400 RPM · 120초 · 자동 정지 없음).`
         : 'FIXED 기준값을 계산하지 못했습니다.'}
@@ -424,7 +537,12 @@ function init() {
         <button class="control primary" type="button" id="sim-again">다시 실행</button>
         <a class="text-link" href="#compare">결과 비교로 이동 ↗</a>
       </div>`;
+    const savingNode = el.result.querySelector('.saving b');
+    if (savingNode && saved !== null) tweenNumber(savingNode, saved, { digits: 0, suffix: '%', duration: 720 });
     el.result.querySelector('#sim-again').addEventListener('click', () => startExperiment());
+    if (typeof el.result.scrollIntoView === 'function') {
+      el.result.scrollIntoView({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    }
   }
 
   /* ── 탱크 애니메이션 (60fps) ───────────────────────────────────────── */
@@ -434,15 +552,35 @@ function init() {
     tank.refresh();
   }
 
+  /* 차트 캔버스 크기가 바뀌면(회전·창 조절) 같은 데이터로 다시 그립니다. */
+  if (window.ResizeObserver) {
+    try {
+      const chartObserver = new ResizeObserver(() => {
+        if (state.view) scheduleCharts(state.view, true);
+        else renderPlaceholder();
+      });
+      chartObserver.observe(el.chartSensor);
+      chartObserver.observe(el.chartPower);
+    } catch {
+      // 관측자를 만들 수 없는 환경은 다음 계측 갱신 때 다시 그립니다.
+    }
+  }
+
   /* 앱이 해시로 페이지를 바꾸면 비교/재생 화면에서는 시뮬레이터를 숨깁니다. */
   const syncVisibility = () => {
     const page = location.hash.slice(1);
-    root.hidden = page === 'compare' || page === 'replay';
+    const hide = page === 'compare' || page === 'replay';
+    if (root.hidden !== hide) root.hidden = hide;
+    // display:none → block 으로 돌아오면 캔버스 크기를 다시 읽고 프레임을 재개합니다.
+    requestAnimationFrame(() => tank.refresh());
   };
   window.addEventListener('hashchange', syncVisibility);
   syncVisibility();
   syncOutputs();
+  resetPanels();
   paintTankStatic();
+  mountSegments(root);
+  paintSegments();
 }
 
 /* ── 공용 그리기 도구 ─────────────────────────────────────────────────── */
@@ -474,22 +612,46 @@ function createTank(canvas, getView, getConfig) {
     angle: 0,
     particles: [],
     lastFrame: 0,
+    lastDraw: 0,
     size: { width: 0, height: 0 },
+    scale: 0,
+    visible: false,
     fillFrom: 0,
     starting: false,
   };
   const PARTICLES = 120;
+  let rafId = 0;
+
+  const reduced = () => prefersReducedMotion();
+  const active = () => state.visible && !document.hidden;
+
+  function schedule() {
+    if (rafId || !active()) return;
+    rafId = requestAnimationFrame(frame);
+  }
 
   function resize() {
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(160, Math.round(rect.width));
-    const height = Math.max(160, Math.round(rect.height));
+    if (rect.width < 1 || rect.height < 1) {
+      // 화면에서 숨겨진 동안에는 프레임을 멈춥니다.
+      state.visible = false;
+      return;
+    }
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+    state.visible = true;
+    if (state.size.width === width && state.size.height === height && state.scale === dpr) {
+      schedule();
+      return;
+    }
     state.size = { width, height };
+    state.scale = dpr;
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ensureParticles();
+    schedule();
   }
 
   function ensureParticles() {
@@ -515,9 +677,19 @@ function createTank(canvas, getView, getConfig) {
 
   function refresh() {
     resize();
+    schedule();
   }
 
   function frame(now) {
+    rafId = 0;
+    if (!active()) return;
+    const stillness = reduced();
+    // 모션을 줄이도록 설정된 경우에는 10fps 로만 그립니다.
+    if (stillness && now - state.lastDraw < 100) {
+      schedule();
+      return;
+    }
+    state.lastDraw = now;
     const dt = Math.min(0.05, (now - (state.lastFrame || now)) / 1000);
     state.lastFrame = now;
     const view = getView?.();
@@ -535,13 +707,13 @@ function createTank(canvas, getView, getConfig) {
     state.rpm += (targetRpm - state.rpm) * Math.min(1, dt * 5);
     const targetMix = Number.isFinite(view?.mix) ? view.mix : 0;
     state.mix += (targetMix - state.mix) * Math.min(1, dt * 3);
-    state.angle += (state.rpm / 300) * 2.6 * dt;   // 화면용 회전(초당 회전수 아님)
+    if (!stillness) state.angle += (state.rpm / 300) * 2.6 * dt;   // 화면용 회전(초당 회전수 아님)
 
-    draw(now, dt, view, config);
-    requestAnimationFrame(frame);
+    draw(now, dt, view, config, !stillness);
+    schedule();
   }
 
-  function draw(now, dt, view, config) {
+  function draw(now, dt, view, config, animate) {
     const { width, height } = state.size;
     if (!width || !height) return;
     const pad = 14;
@@ -577,23 +749,41 @@ function createTank(canvas, getView, getConfig) {
       ctx.clip();
       ctx.fillStyle = gradient;
       ctx.fillRect(tankLeft, surfaceY, innerW, waterH);
-      // 표면 물결
+      const phase = animate ? now / 620 : 0.9;
+      const amplitude = 0.6 + 0.12 * Math.min(3, state.rpm / 120);
       ctx.beginPath();
       ctx.moveTo(tankLeft, surfaceY);
       for (let x = tankLeft; x <= tankRight; x += 6) {
-        const wave = Math.sin((x / 18) + now / 620) * (0.6 + 0.12 * Math.min(3, state.rpm / 120));
-        ctx.lineTo(x, surfaceY + wave);
+        ctx.lineTo(x, surfaceY + Math.sin((x / 18) + phase) * amplitude);
       }
-      ctx.lineTo(tankRight, surfaceY + 10);
-      ctx.lineTo(tankLeft, surfaceY + 10);
+      ctx.lineTo(tankRight, surfaceY + 12);
+      ctx.lineTo(tankLeft, surfaceY + 12);
       ctx.closePath();
-      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      const sheen = ctx.createLinearGradient(0, surfaceY, 0, surfaceY + 12);
+      sheen.addColorStop(0, 'rgba(255,255,255,.62)');
+      sheen.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = sheen;
       ctx.fill();
-      drawParticles(ctx, dt, tankLeft, tankRight, surfaceY, tankBottom);
-      drawImpeller(ctx, cx, tankBottom - 8, tankRight - tankLeft, waterH, now);
+      drawParticles(ctx, dt, tankLeft, tankRight, surfaceY, tankBottom, animate);
+      drawImpeller(ctx, cx, tankBottom - 8, tankRight - tankLeft, waterH);
       ctx.restore();
     } else {
-      drawImpeller(ctx, cx, tankBottom - 8, tankRight - tankLeft, 0, now);
+      drawImpeller(ctx, cx, tankBottom - 8, tankRight - tankLeft, 0);
+    }
+
+    // 용기 벽 눈금 (10 L · 20 L) — 수면 위에서도 보이도록 액체 위에 그립니다.
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.fillStyle = 'rgba(108, 118, 110, .48)';
+    ctx.strokeStyle = 'rgba(120, 132, 122, .28)';
+    ctx.lineWidth = 1;
+    ctx.textAlign = 'right';
+    for (const litres of [10, 20]) {
+      const tickY = tankBottom - (tankBottom - tankTop) * (litres / 30);
+      ctx.beginPath();
+      ctx.moveTo(tankRight - 22, tickY);
+      ctx.lineTo(tankRight - 6, tickY);
+      ctx.stroke();
+      ctx.fillText(String(litres), tankRight - 26, tickY + 3);
     }
 
     // 눈금·라벨
@@ -607,10 +797,10 @@ function createTank(canvas, getView, getConfig) {
     ctx.fillText(material === 'caco3' ? 'CaCO₃' : 'NaCl', tankRight - 4, tankBottom + 16);
   }
 
-  function drawParticles(context, dt, left, right, surfaceY, bottom) {
+  function drawParticles(context, dt, left, right, surfaceY, bottom, animate) {
     const disperse = state.mix * (0.35 + 0.65 * Math.min(1, state.rpm / 260));
     for (const particle of state.particles) {
-      if (Math.random() < 0.008) {
+      if (animate && Math.random() < 0.008) {
         particle.tx = 0.12 + Math.random() * 0.76;
         particle.ty = 0.08 + Math.random() * 0.84;
       }
@@ -641,7 +831,7 @@ function createTank(canvas, getView, getConfig) {
     }
   }
 
-  function drawImpeller(context, cx, baseY, width, waterH, now) {
+  function drawImpeller(context, cx, baseY, width, waterH) {
     const shaft = Math.min(46, waterH * 0.6);
     context.strokeStyle = '#8e9a92';
     context.lineWidth = 3;
@@ -653,7 +843,7 @@ function createTank(canvas, getView, getConfig) {
     const radius = Math.min(34, width * 0.16);
     context.save();
     context.translate(cx, baseY - shaft);
-    context.rotate(state.angle * 3 + now / 4000);
+    context.rotate(state.angle * 3);   // 회전수에 따른 회전 — 정지하면 멈춥니다.
     for (let index = 0; index < blades; index += 1) {
       context.rotate((Math.PI * 2) / blades);
       context.beginPath();
@@ -671,12 +861,24 @@ function createTank(canvas, getView, getConfig) {
     context.restore();
   }
 
-  if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
-  window.addEventListener('resize', resize);
+  if (window.ResizeObserver) {
+    try {
+      new ResizeObserver(resize).observe(canvas);
+    } catch {
+      // 관측자를 만들 수 없는 환경은 resize 이벤트로 대신합니다.
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      state.lastFrame = 0;
+      schedule();
+    }
+  });
+  window.addEventListener('resize', resize, { passive: true });
   resize();
   ensureParticles();
   reset();
-  requestAnimationFrame(frame);
+  schedule();
   return { reset, refresh };
 }
 

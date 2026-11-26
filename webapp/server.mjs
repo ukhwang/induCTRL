@@ -20,6 +20,7 @@ const files = new Map([
   ['/chart.js', ['chart.js', 'text/javascript; charset=utf-8']],
   ['/sim.js', ['sim.js', 'text/javascript; charset=utf-8']],
   ['/engine.js', ['engine.js', 'text/javascript; charset=utf-8']],
+  ['/ui.js', ['ui.js', 'text/javascript; charset=utf-8']],
 ]);
 
 /* ── 내장 모의 데이터(--demo) ───────────────────────────────────────────── */
