@@ -25,6 +25,13 @@ const labels = {
 
 const batchColumns = 'batch_id, material, mode, scenario, created_at_utc, finished_at_utc, final_status';
 const manualColumns = 'id, kind, position, metric, value, unit, passed, measured_at_utc, note';
+const simRunColumns = 'batch_id, material, water_l, solute_g, concentration_g_per_l, control_mode, '
+  + 'speed_factor, fixed_seconds, njs_rpm, baseline_energy_wh, created_at_utc';
+const simMetricColumns = 'seq, elapsed_s, rpm, rpm_setpoint, phase, power_w, energy_wh, cv_pct, mix';
+const simPoint = (row) => (row ? {
+  elapsed_s: row.elapsed_s, rpm: row.rpm, rpm_setpoint: row.rpm_setpoint, phase: row.phase,
+  power_w: row.power_w, energy_wh: row.energy_wh, cv_pct: row.cv_pct, mix: row.mix,
+} : null);
 
 function query(table, columns, conditions, source, tail) {
   const entries = Object.entries(conditions);
@@ -112,6 +119,57 @@ function eventDetail(row) {
   return '';
 }
 
+/**
+ * 시뮬레이터 계측(sim_runs / sim_metrics)을 읽습니다.
+ * 테이블이 없는 DB(예전 기록, Neon)면 null 로 조용히 넘어갑니다.
+ */
+async function readSim(rows, batchId) {
+  let run;
+  try {
+    [run] = await rows('sim_runs', simRunColumns, { batch_id: batchId });
+  } catch {
+    return null;                 // 시뮬레이터 테이블이 없는 기록
+  }
+  if (!run) return null;
+  const metrics = await rows('sim_metrics', simMetricColumns, { batch_id: batchId }, 'ORDER BY seq');
+  const marks = await rows('events', 'event_type, elapsed_s', { batch_id: batchId },
+    "AND event_type IN ('candidate', 'stop_confirmed') ORDER BY id");
+  if (!metrics.length) return { ...simRunView(run), history: [], result: null, total: null, latest: null };
+  const last = metrics.at(-1);
+  // 품질·에너지는 '판정 시점' 값으로 보고합니다(정지 후 침강으로 CV 가 다시 오르므로).
+  const judged = marks.find((row) => row.event_type === 'candidate')
+    ?? marks.find((row) => row.event_type === 'stop_confirmed');
+  const picked = judged && Number.isFinite(judged.elapsed_s)
+    ? metrics.reduce((best, row) =>
+      (Math.abs(row.elapsed_s - judged.elapsed_s) < Math.abs(best.elapsed_s - judged.elapsed_s) ? row : best),
+    metrics[0])
+    : last;
+  return {
+    ...simRunView(run),
+    decided_at_s: judged?.elapsed_s ?? null,
+    result: simPoint(picked),
+    total: simPoint(last),
+    latest: simPoint(last),
+    history: metrics.map((row) => ({
+      elapsed_s: row.elapsed_s, power_w: row.power_w, energy_wh: row.energy_wh,
+      cv_pct: row.cv_pct, mix: row.mix, rpm: row.rpm, rpm_setpoint: row.rpm_setpoint, phase: row.phase,
+    })),
+  };
+}
+
+function simRunView(run) {
+  return {
+    water_l: run.water_l,
+    solute_g: run.solute_g,
+    concentration_g_per_l: run.concentration_g_per_l,
+    control_mode: run.control_mode,
+    speed_factor: run.speed_factor,
+    fixed_seconds: run.fixed_seconds,
+    njs_rpm: run.njs_rpm,
+    baseline_energy_wh: run.baseline_energy_wh,
+  };
+}
+
 async function getRun(rows, batch, cloud) {
   const filters = { batch_id: batch.batch_id };
   const readings = await rows('readings', 'channel, collected_at_utc, elapsed_s, value, unit, status',
@@ -119,6 +177,7 @@ async function getRun(rows, batch, cloud) {
   const events = await rows('events', 'event_type, at_utc, elapsed_s, detail_json', filters, 'ORDER BY id');
   const decisions = await rows('decision_log', 'elapsed_s, state, rpm, hold_s, verified, reasons_json',
     filters, 'ORDER BY seq DESC, id DESC LIMIT 1');
+  const sim = cloud ? null : await readSim(rows, batch.batch_id);
   const micEntries = (await rows('manual_entries', manualColumns, filters, 'ORDER BY id DESC LIMIT 100'))
     .map((row) => ({ ...row, source: 'MIC' }));
   const webEntries = cloud
@@ -148,6 +207,7 @@ async function getRun(rows, batch, cloud) {
     metrics,
     latest,
     units,
+    sim,
     last_reading_at: lastReadingAt === null ? null : new Date(lastReadingAt).toISOString(),
     samples,
     events: events.map((row) => ({
@@ -185,6 +245,22 @@ export function createStore({ path, url, source, writeUrl }) {
       return read(async (rows) => {
         const [batch] = await rows('batches', batchColumns, { batch_id: id });
         return batch ? getRun(rows, batch, Boolean(url)) : null;
+      });
+    },
+    async simStatus(id) {
+      if (!id) return null;
+      return read(async (rows) => {
+        const [batch] = await rows('batches', batchColumns, { batch_id: id });
+        if (!batch) return null;
+        const sim = await readSim(rows, id);
+        return {
+          id: batch.batch_id,
+          material: batch.material,
+          final_status: batch.final_status,
+          created_at: batch.created_at_utc,
+          elapsed_s: sim?.total?.elapsed_s ?? 0,
+          sim: sim ? { ...sim, history: undefined } : null,
+        };
       });
     },
     async manual(entry) {

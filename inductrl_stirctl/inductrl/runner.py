@@ -7,18 +7,19 @@ from . import actuator as actuator_mod
 from . import config as config_mod
 from . import db as db_mod
 from . import modbus_io
+from . import sim as sim_mod
 from .acquisition import PlanItem, SampleSource, acquire_cycle
 from .actuator import MockActuator, NoWriteActuator, StopActuator, StopWriteResult
 from .mock import SCENARIOS, MockPlant, MockSource, apply_mock_defaults
 from .models import (ANALOG_CHANNELS, CH_ROTATION, CH_STOP_FEEDBACK, EV_ERROR,
                      EV_MODBUS_RESPONSE, EV_RUN_FINISHED, EV_RUN_STARTED, EV_STOP_BLOCKED,
-                     EV_STOP_REQUESTED, EV_STOP_UNCONFIRMED,
+                     EV_STOP_CONFIRMED, EV_STOP_REQUESTED, EV_STOP_UNCONFIRMED,
                      EV_WARNING, FS_ABORTED, FS_AUTO_STOP_CONFIRMED, FS_CANDIDATE_RECORDED,
                      FS_CANDIDATE_UNVERIFIED, FS_INTERRUPTED, FS_NO_CANDIDATE, FS_RUNNING,
                      FS_STOP_UNCONFIRMED, MATERIAL_CHANNELS, EventRecord)
 from .processing import BatchProcessor, CycleResult
 from .stopctl import CONFIRMED, StopMonitor
-from .timeutil import SimClock, real_clock, real_sleep, utc_now_iso
+from .timeutil import ScaledClock, SimClock, real_clock, real_sleep, utc_now_iso
 
 MOCK_DEFAULT_SAMPLES = 240
 
@@ -45,6 +46,8 @@ class RunOptions:
     fast: bool = False
     db_path: Optional[str] = None
     status_every: int = 10
+    sim: Optional[sim_mod.SimParams] = None      # 실시간 시뮬레이터 조건(없으면 기존 동작)
+    stop_grace_s: Optional[float] = None         # 정지 확인 후 수집을 마무리하는 유예시간
 
 
 @dataclass
@@ -121,8 +124,11 @@ class BatchRunner:
 
         if clock is None:
             if opts.mode == "mock" and opts.fast:
-                sim = SimClock()
-                clock, sleep = sim.now, sim.sleep
+                sim_clock = SimClock()
+                clock, sleep = sim_clock.now, sim_clock.sleep
+            elif opts.mode == "mock" and opts.sim is not None and opts.sim.speed_factor != 1.0:
+                scaled = ScaledClock(opts.sim.speed_factor)
+                clock, sleep = scaled.now, scaled.sleep
             else:
                 clock, sleep = real_clock, real_sleep
         self.clock = clock
@@ -141,13 +147,16 @@ class BatchRunner:
         self.stop_requested = False
         self.candidate_verified = None  # type: Optional[bool]
         self.event_log = []  # type: List[str]
+        self.stopped_confirmed_t = None  # type: Optional[float]
+        self.sim_stall_warned = False
 
     # ------------------------------------------------------------------ #
     def _build_io(self) -> None:
         cfg, opts = self.cfg, self.opts
         if opts.mode == "mock":
             # Modbus 클라이언트를 만들지 않습니다.
-            self.plant = MockPlant(cfg, opts.material, SCENARIOS[opts.scenario], self.clock)
+            self.plant = MockPlant(cfg, opts.material, SCENARIOS[opts.scenario], self.clock,
+                                   sim=opts.sim)
             self.source = MockSource(self.plant, self.clock, self.sleep)
             sc = SCENARIOS[opts.scenario]
             self.actuator = MockActuator(self.clock, sc.actuator_outcome, self.plant.stop, sc.motor_stops)
@@ -191,6 +200,11 @@ class BatchRunner:
         db_mod.create_batch(con, opts.batch_id, opts.material, opts.mode, opts.start_trigger,
                             opts.scenario if opts.mode == "mock" else None, utc_now_iso(),
                             cfg_json, config_mod.config_hash(self.cfg), FS_RUNNING)
+        if opts.sim is not None:
+            db_mod.insert_sim_run(con, opts.batch_id, opts.material, opts.sim,
+                                  opts.sim.njs_rpm,
+                                  sim_mod.fixed_baseline_energy_wh(opts.sim), utc_now_iso())
+            con.commit()
         final_status = FS_RUNNING
         seq = 0
         processor = None  # type: Optional[BatchProcessor]
@@ -233,11 +247,28 @@ class BatchRunner:
                 if self.stop_monitor is not None and self.stop_requested:
                     for ev in self.stop_monitor.update(res.t_eval, res.rpm, res.feedback_value):
                         self._event(con, ev, t_start)
+                        if ev.event_type == EV_STOP_CONFIRMED and self.stopped_confirmed_t is None:
+                            self.stopped_confirmed_t = res.t_eval
+                if self.plant is not None and self.plant.physics is not None:
+                    sim_metric = self.plant.metrics(res.t_eval)
+                    if sim_metric is not None:
+                        db_mod.insert_sim_metric(con, opts.batch_id, seq, sim_metric)
+                    physics = self.plant.physics
+                    if physics.stalled and not self.sim_stall_warned:
+                        self.sim_stall_warned = True
+                        self._event(con, EventRecord(EV_WARNING, res.t_eval, {
+                            "channel": "sim",
+                            "message": "투입 부하 대비 회전수가 부족해 침전물이 뜨지 않습니다(Njs≈{:.0f} RPM)".format(
+                                physics.params.njs_rpm),
+                            "reason": "below_suspension_speed"}), t_start)
                 con.commit()
                 if opts.status_every and seq % opts.status_every == 0:
                     print(_status_line(res, t_start), file=self.out, flush=True)
                 seq += 1
                 if self.samples and seq >= self.samples:
+                    break
+                if (self.stopped_confirmed_t is not None and opts.stop_grace_s is not None
+                        and self.clock() - self.stopped_confirmed_t >= opts.stop_grace_s):
                     break
                 remaining = self.interval - (self.clock() - cycle_start)
                 if remaining > 0:
@@ -277,6 +308,10 @@ class BatchRunner:
         if self.stop_requested:
             return
         verified = bool(res.candidate_event.detail.get("verified")) if res.candidate_event else False
+        if opts.sim is not None and opts.sim.control_mode == "fixed":
+            self._event(con, EventRecord(EV_STOP_BLOCKED, res.t_eval, {
+                "reason": "fixed 기준 운전 — 자동 정지 없음(비교 기준값)"}), t_start)
+            return
         if opts.mode == "observe":
             print("  observe 모드: 후보 시각만 기록 (쓰기 0회)", file=self.out, flush=True)
             return

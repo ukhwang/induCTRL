@@ -58,3 +58,28 @@ def real_clock() -> float:
 def real_sleep(seconds: float) -> None:
     if seconds > 0:
         time.sleep(seconds)
+
+
+class ScaledClock:
+    """실시간 시뮬레이터용 배율 시계.
+
+    1초의 설비 시간을 1/speed_factor 초의 실제 시간으로 압축합니다.
+    기록되는 경과시간(elapsed_s)은 설비 시간 그대로라서, 10x 로 봐도 120초 배치로 남습니다.
+    """
+
+    def __init__(self, speed_factor: float, clock: Callable[[], float] = real_clock,
+                 sleep: Callable[[float], None] = real_sleep) -> None:
+        if speed_factor <= 0:
+            raise ValueError("speed_factor 는 0 보다 커야 합니다")
+        self.speed = float(speed_factor)
+        self._clock = clock
+        self._sleep = sleep
+        self._inner_origin = clock()
+        self._origin = 1000.0
+
+    def now(self) -> float:
+        return self._origin + (self._clock() - self._inner_origin) * self.speed
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 0:
+            self._sleep(seconds / self.speed)

@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f7f7f3">
-  <title>induCTRL · 교반 모니터</title>
+  <title>induCTRL · 교반 실시간 시뮬레이터</title>
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
+  <script type="module" src="/sim.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,6 +22,88 @@
       <span class="mode" hidden></span>
     </div>
   </header>
+
+  <section id="sim" class="shell sim" aria-label="실시간 실험 시뮬레이터" hidden>
+    <div class="sim-head">
+      <div>
+        <div class="device">SIMULATOR / 실시간 실험</div>
+        <h2 class="sim-title">물과 용질을 넣고 실험을 시작하세요</h2>
+      </div>
+      <span id="sim-badge" class="sim-badge" data-kind="idle" role="status">대기</span>
+    </div>
+
+    <div class="sim-grid">
+      <div class="sim-tank">
+        <canvas id="sim-canvas" role="img" aria-label="교반조 애니메이션"></canvas>
+        <div class="sim-tank-caption">
+          <span id="sim-material-label">소금물 실험 (김치 염수)</span>
+          <span id="sim-elapsed" class="sim-clock">00:00</span>
+        </div>
+      </div>
+
+      <form id="sim-form" class="sim-form" autocomplete="off">
+        <div class="sim-block">
+          <span class="label">실험 종류</span>
+          <div class="chip-row">
+            <label class="chip"><input type="radio" name="material" value="saltwater" checked><span>소금물 · 김치 염수</span></label>
+            <label class="chip"><input type="radio" name="material" value="caco3"><span>탄산칼슘 · 막걸리 침전물</span></label>
+          </div>
+        </div>
+
+        <label class="sim-field">
+          <span class="label">물 투입량 <output id="water-out">10 L</output></span>
+          <input id="water" type="range" min="2" max="30" step="1" value="10">
+        </label>
+        <label class="sim-field">
+          <span class="label">용질 투입량 <output id="solute-out">500 g</output></span>
+          <input id="solute" type="range" min="50" max="2000" step="50" value="500">
+          <small id="sim-concentration" class="sim-hint">농도 50 g/L</small>
+        </label>
+
+        <div class="sim-block">
+          <span class="label">제어 모드</span>
+          <div class="segment" id="mode-seg" role="group" aria-label="제어 모드">
+            <button type="button" data-mode="fixed">FIXED</button>
+            <button type="button" data-mode="rule" aria-pressed="true">RULE</button>
+            <button type="button" data-mode="ai">AI</button>
+          </div>
+        </div>
+
+        <div class="sim-block">
+          <span class="label">재생 속도</span>
+          <div class="segment" id="speed-seg" role="group" aria-label="재생 속도">
+            <button type="button" data-speed="1">1x</button>
+            <button type="button" data-speed="5" aria-pressed="true">5x</button>
+            <button type="button" data-speed="10">10x</button>
+          </div>
+        </div>
+
+        <div class="sim-actions">
+          <button id="sim-start" class="control primary" type="submit">실험 시작</button>
+          <button id="sim-stop" class="control" type="button" disabled>정지</button>
+        </div>
+        <p id="sim-note" class="sim-note" role="status"></p>
+      </form>
+
+      <div class="sim-telemetry">
+        <div id="sim-tiles" class="sim-tiles"></div>
+        <div class="sim-charts">
+          <figure class="sim-chart-box">
+            <figcaption id="sim-chart-sensor-label">판정 변수</figcaption>
+            <canvas id="sim-chart-sensor" class="sim-chart" role="img"></canvas>
+          </figure>
+          <figure class="sim-chart-box">
+            <figcaption id="sim-chart-power-label">누적 에너지 · Wh</figcaption>
+            <canvas id="sim-chart-power" class="sim-chart" role="img"></canvas>
+          </figure>
+        </div>
+        <ol id="sim-events" class="sim-events"></ol>
+      </div>
+    </div>
+
+    <div id="sim-result" class="sim-result" hidden></div>
+  </section>
+
   <main id="main" class="shell" aria-busy="true">
     <p class="placeholder" role="status">교반 데이터를 불러오는 중입니다.</p>
   </main>

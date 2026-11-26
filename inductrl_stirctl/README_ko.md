@@ -36,6 +36,7 @@
 │   ├── stopctl.py          # 정지 확인 상태기계 (쓰기 없음)
 │   ├── actuator.py         # ★ 유일한 쓰기 코드: 배치당 write_coil 1회
 │   ├── mock.py             # 가상 센서·가상 모터·시험 시나리오
+│   ├── sim.py              # 실시간 시뮬레이터 물리 모델(물·용질 → 혼합·동력·에너지)
 │   ├── runner.py           # 배치 실행 루프 (mock / observe / live)
 │   ├── replay.py           # 저장된 원시값·설정으로 재계산
 │   ├── manual.py           # 수동 입력·배치 요약
@@ -166,6 +167,38 @@ python stirctl.py run --mode observe --config config.json --material caco3 --bat
 python stirctl.py run --mode live --config config.json --material saltwater --batch-id run-001 --arm-stop
 ```
 
+### 실시간 시뮬레이터 (mock + 물·용질 투입)
+
+웹 화면에서 고른 실험 조건으로 mock 배치를 돌립니다. 실제 장비는 쓰지 않습니다.
+
+```bash
+# 물 10 L + 소금 500 g, 판정 엔진(RULE)으로 실행. 10배속이면 실제 5초에 끝납니다.
+python stirctl.py run --mode mock --material saltwater --batch-id sim-1 --db /tmp/inductrl-sim.sqlite \
+  --water-l 10 --solute-g 500 --control-mode rule --speed-factor 10
+
+# 탄산칼슘 + AI 제어, 1배속(실시간)
+python stirctl.py run --mode mock --material caco3 --batch-id sim-2 --db /tmp/inductrl-sim.sqlite \
+  --water-l 8 --solute-g 300 --control-mode ai
+```
+
+| 인자 | 뜻 | 범위 |
+|---|---|---|
+| `--water-l` | 물 투입량(L) | 0.5 ~ 200 (기본 10) |
+| `--solute-g` | 용질 투입량(g) | 0 ~ 20000 (기본 500) |
+| `--control-mode` | `fixed` / `rule` / `ai` (기본 `rule`) | — |
+| `--speed-factor` | 설비 시간 대비 실제 시간 배율 | 0.25 ~ 50 (기본 1) |
+| `--fixed-seconds` | FIXED 기준 운전 시간(초) | 10 ~ 3600 (기본 120) |
+
+`--speed-factor` 는 기다리는 시간만 줄이고 **기록되는 경과시간(과 에너지)** 은 설비 시간 그대로입니다(10배속 60초 배치 → 실제 6초, 기록 60초).
+
+계산 모델(`inductrl/sim.py`, 기준 10 L·50 g/L·300 RPM):
+
+- 부하계수 `Lf = (농도/50)^0.55`, 부상 임계 `Njs = 190·Lf` — 이보다 느리면 침전물이 뜨지 않습니다(경고 이벤트).
+- 혼합 `dM/dt = 0.9·(rpm/Njs)^1.4·(1-M)/τ`, `τ = 14 s·(V/10)^0.35·√Lf`.
+- 축동력 `P = 120 W·(V/10)^0.67·(1+0.35(Lf-1))·(rpm/300)^2.85·(1+0.22(1-M))`, 에너지 `∫P dt` [Wh].
+- 센서: 염수는 전도도 `50 + 6(1-M)`, CaCO₃ 는 상부 `500 - 170(1-M)` / 하부 `500 + 170(1-M)` + 교반 난류 잡음.
+- 제어 모드: `fixed` = 400 RPM·고정 시간·자동 정지 없음(비교 기준), `rule` = 320 RPM 고정, `ai` = 초기 진단 260 → 부상 단계 → 감속 순환.
+
 ## 6. 판정 요약
 
 - 주기: `decision.interval_seconds`(초기 0.5초). 경과시간·윈도우·유지시간·타임아웃은 전부 `time.monotonic()` 기준, UTC 는 기록용입니다.
@@ -233,6 +266,8 @@ DB 에 저장된 원시값(`readings.raw_json`)과 그 배치의 저장된 설�
 | `decision_log` | 주기별 판정 상태, RPM, 유지시간, 검증 여부, 미충족 사유 |
 | `manual_entries` | batch_id, kind(sample/quality/manual_stop), position, metric, value, unit, passed, entered_at_utc, measured_at_utc, monotonic_s, note |
 | `sensor_raw` | 기존 main.py 전용 (변경 없음) |
+| `sim_runs` | 시뮬레이터 실험 조건(물·용질·농도·제어 모드·속도·Njs·FIXED 기준 에너지) |
+| `sim_metrics` | 주기별 시뮬레이터 계측(축동력 W, 누적 Wh, 잔여 불균일 CV%, 혼합도, 단계) |
 
 ## 11. 테스트
 

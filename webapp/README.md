@@ -1,24 +1,74 @@
-# induCTRL 교반 모니터
+# induCTRL 교반 모니터 · 실시간 시뮬레이터
 
 휴대폰에서 MIC 배치의 전도도, 상·하부 탁도, 파생 RPM, 완료 후보 및 정지 확인을 조회합니다. 비교와 녹화 재생은 원본 SQLite에 기록된 `elapsed_s`를 기준으로 표시합니다. 미검증 완료 후보, 정지 미확인, 중단은 각각 구분합니다. `OK` 측정값만 숫자로 표시하며, 0도 유효할 수 있습니다.
 
-## 원본 stirctl 모의 데이터로 실행
+화면 위쪽의 **실시간 실험** 패널에서 실험 종류(소금물·탄산칼슘)와 물(L)·용질(g)·제어 모드(FIXED/RULE/AI)·재생 속도를 정하고 `실험 시작`을 누르면, 교반조 애니메이션과 함께 판정·에너지가 실시간으로 쌓이고 끝나면 결과 카드가 나옵니다.
 
-Node.js 24가 필요합니다. 저장소에 포함된 원본 stirctl로 아래 명령을 실행합니다. 원본 Python 파일 수정이나 장비 연결 없이 생성한 SQLite를 웹앱에서 읽습니다.
+## 실행 경로 두 가지
+
+| 경로 | 언제 | 무엇이 도는가 | 결과 저장 |
+|---|---|---|---|
+| **서버(로컬·MIC)** | `node webapp/server.mjs` 로 직접 실행 | `stirctl.py run --mode mock` 자식 프로세스 + SQLite | `STIR_SQLITE_DB`(없으면 `/tmp/inductrl-sim.sqlite`) |
+| **브라우저 엔진** | 정적 호스팅(Vercel), 또는 Python·SQLite 가 없는 환경 | `public/engine.js` — `sim.py`·`decision.py` 와 같은 물리식·판정 규칙 | 브라우저 메모리(새로고침 시 사라짐) |
+
+화면은 `/api/sim/start` 를 먼저 시도하고, 응답이 `python_unavailable`/`sim_disabled` 이거나 API 자체가 없으면(정적 배포) 자동으로 브라우저 엔진으로 넘어갑니다. 그래서 같은 화면이 로컬에서도 온라인에서도 100% 동작합니다.
+
+## 로컬 실행 (Python + SQLite)
+
+Node.js 24와 python3가 필요합니다. 환경 변수를 주지 않으면 시뮬레이터용 SQLite 를 `/tmp/inductrl-sim.sqlite` 에 자동으로 만듭니다.
+
+```sh
+npm --prefix webapp ci
+node webapp/server.mjs            # http://localhost:3000 · 시뮬레이터 사용 가능
+```
+
+MIC 원본 기록을 함께 보려면 기존처럼 DB 경로를 지정합니다.
 
 ```sh
 # 저장소의 inductrl_stirctl 디렉터리
 python3 stirctl.py run --mode mock --material saltwater --batch-id saltwater-01 --fast --db /tmp/stirctl-demo.sqlite
-python3 stirctl.py run --mode mock --material caco3 --batch-id caco3-01 --fast --db /tmp/stirctl-demo.sqlite
-```
-
-```sh
 # 이 저장소 루트
-npm --prefix webapp ci
 STIR_SQLITE_DB=/tmp/stirctl-demo.sqlite node webapp/server.mjs
 ```
 
-기본 포트는 3000입니다. Codex에서 휴대폰으로 확인하려면 환경의 **HTTP Previews**에 3000번 포트를 추가합니다. 서버 실행 후, 다른 터미널에서 `--fast`를 생략하고 새 배치 ID로 다시 실행하면 기다리는 중 → 완료 후보 → 정지 확인이 실시간으로 바뀝니다. DB 없이 `node webapp/server.mjs --fast`를 실행하면 화면 조작용 내장 모의 데이터도 볼 수 있습니다.
+DB 없이 화면만 둘러보려면 `node webapp/server.mjs --demo`(내장 모의 데이터).
+
+### 시뮬레이터 API
+
+| 메서드 · 경로 | 내용 |
+|---|---|
+| `POST /api/sim/start` | `{material, water_l, solute_g, control_mode, speed_factor}` → 실행 중인 자식 프로세스를 먼저 종료하고 새로 시작, `{ok, batch_id}` 반환 |
+| `POST /api/sim/stop` | 실행 중인 시뮬레이션을 SIGINT 로 끝내고 배치를 `INTERRUPTED` 로 마감 |
+| `GET /api/sim/status` | 실행 여부, 현재 조건, 종료 코드, 최근 로그, 배치 요약 |
+| `GET /api/snapshot`, `GET /api/batch?id=…` | 기존 조회 API. 응답에 `sim`(조건·판정 시점 결과·history)이 추가됩니다 |
+
+```sh
+curl -X POST localhost:3000/api/sim/start -H 'Content-Type: application/json' \
+  -d '{"material":"saltwater","water_l":10,"solute_g":500,"control_mode":"ai","speed_factor":10}'
+curl localhost:3000/api/sim/status
+```
+
+## Vercel 무료 배포 (Hobby, 0원)
+
+정적 파일만 올리므로 서버·DB·과금이 없습니다. 슬립도 트래픽 과금도 없고, 컴퓨터를 꺼도 그대로 동작합니다(실행은 방문자 브라우저의 엔진이 담당).
+
+1. [vercel.com/new](https://vercel.com/new) → **Import Git Repository** → `ukhwang/induCTRL` 선택 (GitHub 계정 연동 그대로).
+2. 설정은 그대로 두면 됩니다: Framework **Other**, Root Directory **저장소 루트**, Build Command 없음, Output Directory `webapp/public`(`vercel.json` 에 지정됨).
+3. **Deploy** → `https://<프로젝트>.vercel.app` 접속 → `실험 시작`을 누르면 브라우저 엔진으로 실험이 돌고 결과 카드가 나옵니다.
+4. 이후 `main` 에 푸시할 때마다 자동 재배포됩니다.
+
+Root Directory 를 `webapp` 으로 지정하는 방식도 됩니다(그때는 `webapp/vercel.json` 이 `public` 을 배포합니다). CLI 로 배포하려면 `npx vercel --prod`(로그인 필요).
+
+> 정적 배포에는 조회 API 가 없으므로 `실시간`·`결과 비교`·`녹화 재생` 탭은 MIC 기록을 보여주지 않습니다(안내 문구 표시). 실험·결과 카드는 시뮬레이터 패널에서 그대로 동작합니다.
+
+## 테스트
+
+```sh
+npm --prefix webapp test                                   # Node 14개 (엔진·시뮬레이터 프로세스·조회)
+cd inductrl_stirctl && python3 -m unittest discover -s tests   # Python 83개 (기존 69 + 시뮬레이터 14)
+```
+
+`webapp/test/engine.test.mjs` 는 브라우저 엔진과 `stirctl.py` 를 같은 조건으로 돌려 **판정 시각·에너지가 같은 범위**에 있는지 대조합니다(python3 가 없으면 건너뜀).
 
 ## Neon 연결
 

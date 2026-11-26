@@ -1,18 +1,28 @@
 import { createServer } from 'node:http';
+import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { normalizeEntry, checkPin, readManualBody } from './manual.mjs';
 import { createStore } from './store.mjs';
+import { createSimJob } from './sim.mjs';
 
 const targetSeconds = 750;
 const fast = process.argv.includes('--fast');
+const demo = process.argv.includes('--demo');
 let startedAt;
 const files = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/chart.js', ['chart.js', 'text/javascript; charset=utf-8']],
+  ['/sim.js', ['sim.js', 'text/javascript; charset=utf-8']],
+  ['/engine.js', ['engine.js', 'text/javascript; charset=utf-8']],
 ]);
 
+/* ── 내장 모의 데이터(--demo) ───────────────────────────────────────────── */
 function makeSamples(duration, seed) {
   return Array.from({ length: Math.floor(duration / 2) + 1 }, (_, index) => {
     const time = index * 2;
@@ -56,6 +66,7 @@ function getSnapshot() {
   const complete = elapsed === targetSeconds;
   return {
     mode: 'mock',
+    sim_enabled: false,
     received_at: new Date(now).toISOString(),
     live: {
       ...live,
@@ -68,6 +79,7 @@ function getSnapshot() {
   };
 }
 
+/* ── 설정 ───────────────────────────────────────────────────────────────── */
 const port = Number(process.env.PORT || 3000);
 const { STIR_SQLITE_DB: path, NEON_READ_URL: url, MIC_SOURCE_ID: source, NEON_WEB_WRITE_URL: writeUrl,
   WEB_ENTRY_PIN: pin, WEB_ORIGIN: origin } = process.env;
@@ -78,19 +90,78 @@ if ((path && url) || (url && !source) || (writeUrl && (!url || !validOrigin || !
   console.error('Check STIR_SQLITE_DB, NEON_READ_URL, MIC_SOURCE_ID and optional manual entry settings.');
   process.exit(1);
 }
-const store = path || url ? createStore({ path, url, source, writeUrl }) : null;
+
+// 환경 변수가 없으면 실시간 시뮬레이터용 로컬 SQLite 를 기본으로 사용합니다(--demo 는 제외).
+const simDbPath = join(tmpdir(), 'inductrl-sim.sqlite');
+const dbPath = path ?? (!url && !demo ? simDbPath : undefined);
+const stirctlDir = fileURLToPath(new URL('../inductrl_stirctl/', import.meta.url));
+const python = process.env.SIM_PYTHON || 'python3';
+
+if (dbPath && !url && !existsSync(dbPath)) {
+  try {
+    execFileSync(python, ['stirctl.py', 'initdb', '--db', dbPath], { cwd: stirctlDir, stdio: 'ignore' });
+  } catch (error) {
+    console.error('시뮬레이터 DB 를 만들지 못했습니다. python3 가 필요합니다:', error.code ?? error.message);
+  }
+}
+
+const store = dbPath || url ? createStore({ path: dbPath, url, source, writeUrl }) : null;
+const sim = dbPath && !url
+  ? createSimJob({ dbPath, cwd: stirctlDir, python })
+  : null;
 
 function sendJSON(res, status, body, head = false) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(head ? undefined : JSON.stringify(body));
 }
 
-createServer(async (req, res) => {
+async function readBody(request) {
+  if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) return null;
+  const parts = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 4096) return null;
+    parts.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(parts).toString());
+  } catch {
+    return null;
+  }
+}
+
+const server = createServer(async (req, res) => {
   try {
     const parsed = new URL(req.url, 'http://localhost');
     const route = parsed.pathname;
     const entry = files.get(route);
-    if (route === '/api/manual' && writeUrl && req.method === 'POST') {
+    if (route === '/api/sim/start' && req.method === 'POST') {
+      if (!sim) {
+        sendJSON(res, 503, { ok: false, error: 'sim_disabled',
+          message: '시뮬레이터는 로컬 SQLite 모드에서만 사용할 수 있습니다.' });
+        return;
+      }
+      const body = await readBody(req);
+      const result = await sim.start(body);
+      sendJSON(res, result.ok ? 200 : 400, result);
+    } else if (route === '/api/sim/stop' && req.method === 'POST') {
+      if (!sim) {
+        sendJSON(res, 503, { ok: false, error: 'sim_disabled' });
+        return;
+      }
+      const result = await sim.stop();
+      sendJSON(res, 200, result);
+    } else if (route === '/api/sim/status') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { Allow: 'GET, HEAD' }).end();
+        return;
+      }
+      const status = sim ? sim.status() : { enabled: false, running: false };
+      const batch = store && status.batch_id ? await store.simStatus(status.batch_id) : null;
+      if (sim) sim.lastBatch = batch;
+      sendJSON(res, 200, { ...status, batch }, req.method === 'HEAD');
+    } else if (route === '/api/manual' && writeUrl && req.method === 'POST') {
       if (req.headers.origin !== origin) {
         sendJSON(res, 403, { error: 'origin' });
         return;
@@ -112,7 +183,15 @@ createServer(async (req, res) => {
       res.writeHead(405, { Allow: 'GET, HEAD' }).end();
     } else if (route === '/api/snapshot' || route === '/api/mock' && !store) {
       const snapshot = store ? await store.snapshot() : getSnapshot();
-      sendJSON(res, 200, snapshot, req.method === 'HEAD');
+      const status = sim ? sim.status() : null;
+      const id = status?.batch_id;
+      let simBatch = null;
+      if (store && id) {
+        simBatch = await store.simStatus(id).catch(() => null);
+      }
+      sendJSON(res, 200, { ...snapshot, sim_enabled: Boolean(sim),
+        sim_running: Boolean(status?.running), sim_config: status?.config ?? null, sim_batch: simBatch },
+      req.method === 'HEAD');
     } else if (route === '/api/batch' && store) {
       const id = parsed.searchParams.get('id');
       const batch = id && id.length <= 250 ? await store.batch(id) : null;
@@ -130,4 +209,20 @@ createServer(async (req, res) => {
     if (!res.headersSent) sendJSON(res, error.code === '23503' ? 404 : 503, { error: 'unavailable' });
     else res.end();
   }
-}).listen(port, '0.0.0.0', () => console.log(`induCTRL ${url ? 'Neon' : path ? 'SQLite' : 'mock'} listening on port ${port}`));
+});
+
+server.listen(port, '0.0.0.0', () => console.log(
+  `induCTRL ${url ? 'Neon' : dbPath ? 'SQLite ' + dbPath : 'mock'} listening on port ${port}` +
+  `${sim ? ' · simulator on' : ''}`));
+
+let closing = false;
+async function shutdown(signal) {
+  if (closing) return;
+  closing = true;
+  if (sim) await sim.stop().catch(() => {});
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+  console.log(`induCTRL 종료(${signal})`);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

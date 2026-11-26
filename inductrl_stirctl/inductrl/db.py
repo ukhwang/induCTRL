@@ -78,6 +78,34 @@ SCHEMA = (
         note TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_manual_batch ON manual_entries(batch_id, id)",
+    # --- 실시간 시뮬레이터(선택) : 기존 테이블은 그대로 두고 옆에 붙입니다. -------
+    """CREATE TABLE IF NOT EXISTS sim_runs (
+        batch_id TEXT PRIMARY KEY,
+        material TEXT NOT NULL,
+        water_l REAL NOT NULL,
+        solute_g REAL NOT NULL,
+        concentration_g_per_l REAL NOT NULL,
+        control_mode TEXT NOT NULL,
+        speed_factor REAL NOT NULL,
+        fixed_seconds REAL NOT NULL,
+        njs_rpm REAL,
+        baseline_energy_wh REAL,
+        created_at_utc TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS sim_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        elapsed_s REAL NOT NULL,
+        rpm REAL,
+        rpm_setpoint REAL,
+        phase TEXT,
+        power_w REAL,
+        energy_wh REAL,
+        cv_pct REAL,
+        mix REAL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_sim_metrics_batch_seq ON sim_metrics(batch_id, seq)",
 )
 
 
@@ -210,5 +238,39 @@ def insert_manual_entry(con: sqlite3.Connection, batch_id: str, kind: str, enter
 
 def list_manual_entries(con: sqlite3.Connection, batch_id: str) -> List[Dict[str, Any]]:
     rows = con.execute("SELECT * FROM manual_entries WHERE batch_id=? ORDER BY id",
+                       (batch_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# sim_runs / sim_metrics (실시간 시뮬레이터)
+# --------------------------------------------------------------------------- #
+def insert_sim_run(con: sqlite3.Connection, batch_id: str, material: str, params: Any,
+                   njs_rpm: float, baseline_energy_wh: float, created_at_utc: str) -> None:
+    con.execute(
+        "INSERT OR REPLACE INTO sim_runs (batch_id, material, water_l, solute_g, "
+        "concentration_g_per_l, control_mode, speed_factor, fixed_seconds, njs_rpm, "
+        "baseline_energy_wh, created_at_utc) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (batch_id, material, params.water_l, params.solute_g, params.concentration,
+         params.control_mode, params.speed_factor, params.fixed_seconds, njs_rpm,
+         baseline_energy_wh, created_at_utc))
+
+
+def insert_sim_metric(con: sqlite3.Connection, batch_id: str, seq: int, m: Dict[str, Any]) -> None:
+    con.execute(
+        "INSERT INTO sim_metrics (batch_id, seq, elapsed_s, rpm, rpm_setpoint, phase, power_w, "
+        "energy_wh, cv_pct, mix) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (batch_id, seq, round(float(m.get("elapsed_s") or 0.0), 6), m.get("rpm"),
+         m.get("rpm_setpoint"), m.get("phase"), m.get("power_w"), m.get("energy_wh"),
+         m.get("cv_pct"), m.get("mix")))
+
+
+def get_sim_run(con: sqlite3.Connection, batch_id: str) -> Optional[Dict[str, Any]]:
+    row = con.execute("SELECT * FROM sim_runs WHERE batch_id=?", (batch_id,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_sim_metrics(con: sqlite3.Connection, batch_id: str) -> List[Dict[str, Any]]:
+    rows = con.execute("SELECT * FROM sim_metrics WHERE batch_id=? ORDER BY seq",
                        (batch_id,)).fetchall()
     return [dict(r) for r in rows]

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import decode
+from . import sim as sim_mod
 from .acquisition import SampleSource
 from .models import (CH_CONDUCTIVITY, CH_ROTATION, CH_TURBIDITY_BOTTOM, CH_TURBIDITY_TOP,
                      MATERIAL_CHANNELS)
@@ -119,12 +120,19 @@ class MockPlant:
     STOP_DECAY_S = 2.0
 
     def __init__(self, cfg: Dict[str, Any], material: str, scenario: Scenario,
-                 clock: Callable[[], float], seed: int = 7) -> None:
+                 clock: Callable[[], float], seed: int = 7,
+                 sim: Optional[sim_mod.SimParams] = None) -> None:
         self.cfg = cfg
+        self.material = material
         self.scenario = scenario
         self.clock = clock
         self.t_origin = clock()
         self.rng = random.Random(seed)
+        self.sim = sim
+        self.physics = None  # type: Optional[sim_mod.SimPhysics]
+        if sim is not None:
+            self.physics = sim_mod.SimPhysics(sim, material, self.t_origin, self._band,
+                                              random.Random(seed + 11))
         self.required = MATERIAL_CHANNELS[material]
         rc = cfg["channels"][CH_ROTATION]
         self.ppr = float(rc["pulses_per_rev"])
@@ -142,20 +150,35 @@ class MockPlant:
 
     def rpm_at(self, t: float) -> float:
         tau = self.tau(t)
+        target = self.physics.rpm_command(tau) if self.physics is not None else self.TARGET_RPM
         if tau < self.MOTOR_START_S:
             base = 0.0
         else:
-            base = min(self.TARGET_RPM, self.TARGET_RPM * (tau - self.MOTOR_START_S) / self.RAMP_S)
+            base = min(target, target * (tau - self.MOTOR_START_S) / self.RAMP_S)
         if self.stopped_at is not None and t >= self.stopped_at:
             return max(0.0, self._rpm_at_stop * (1.0 - (t - self.stopped_at) / self.STOP_DECAY_S))
         return base
+
+    def _advance_sim(self, t: float) -> None:
+        if self.physics is not None:
+            self.physics.advance(t, self.rpm_at)
+
+    def metrics(self, t: float) -> Optional[Dict[str, Any]]:
+        """시뮬레이션 계측값(동력·에너지·혼합도). 시뮬레이션이 아니면 None."""
+        if self.physics is None:
+            return None
+        self._advance_sim(t)
+        return self.physics.metrics(t, self.rpm_at(t))
 
     def stop(self, t: float) -> None:
         if self.stopped_at is None:
             self._rpm_at_stop = self.rpm_at(t)
             self.stopped_at = t
+            if self.physics is not None:
+                self.physics.mark_stopped()
 
     def counter_value(self, t: float) -> int:
+        self._advance_sim(t)
         if self._last_t is not None and t > self._last_t:
             self._revs += (self.rpm_at(self._last_t) + self.rpm_at(t)) / 2.0 * (t - self._last_t) / 60.0
         if self._last_t is None or t > self._last_t:
@@ -179,6 +202,7 @@ class MockPlant:
 
     def analog_value(self, ch: str, t: float) -> float:
         """가상 공학값. 판정 채널의 실패 모드는 여기서 발생합니다."""
+        self._advance_sim(t)
         n = self._reads.get(ch, 0) + 1
         self._reads[ch] = n
         sc = self.scenario
@@ -192,6 +216,8 @@ class MockPlant:
                 vmin = ch_cfg.get("valid_min") or 0.0
                 vmax = ch_cfg.get("valid_max") if ch_cfg.get("valid_max") is not None else 1000.0
                 return vmax + (vmax - vmin)
+        if self.physics is not None:
+            return self.physics.analog_value(ch, self.tau(t), self.rpm_at(t))
         lo, hi, span = self._band(ch)
         mid, width = (lo + hi) / 2.0, (hi - lo)
         noise_amp = 0.05 * span if span else 0.01 * width

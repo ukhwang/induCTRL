@@ -43,6 +43,7 @@ let replayTime = 0;
 let replayTimer;
 let selectedRuns = new Set([0, 1]);
 let manualId;
+let failures = 0;
 
 const isMock = () => snapshot?.mode === 'mock';
 const displayMetric = (key, run) => ({
@@ -585,6 +586,7 @@ async function poll() {
       data.manual_enabled ? '웹 수동 기록 사용' : '읽기 전용',
     ].join(' · ');
     offline = false;
+    failures = 0;
     main.setAttribute('aria-busy', 'false');
     if (first) renderPage();
     else if (page === 'home' || page === 'live') {
@@ -594,9 +596,13 @@ async function poll() {
     else if (hasNewRecording) updateRecordings();
   } catch {
     offline = true;
+    failures += 1;
     if (!snapshot) {
       main.setAttribute('aria-busy', 'false');
-      main.innerHTML = '<p class="placeholder" role="status">데이터 서버에 연결할 수 없습니다. 다시 연결하는 중입니다.</p>';
+      main.innerHTML = failures > 1
+        ? `<p class="placeholder" role="status">이 주소는 조회 API 없이 배포된 화면입니다. 위쪽 <b>실시간 실험</b>에서 실험을 실행하면 이 자리 대신 결과가 쌓입니다.
+          MIC 원본 기록까지 보려면 <code>node webapp/server.mjs</code>로 직접 실행하세요.</p>`
+        : '<p class="placeholder" role="status">교반 데이터를 불러오는 중입니다.</p>';
     } else if (page === 'home' || page === 'live') updateLive();
   } finally {
     setTimeout(poll, document.hidden ? 15000 : 2000);

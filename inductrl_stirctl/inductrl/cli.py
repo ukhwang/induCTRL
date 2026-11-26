@@ -1,6 +1,7 @@
 """stirctl 명령행.
 
   run         배치 실행 (mock / observe / live)
+  initdb      SQLite 스키마만 만들기(웹앱 시뮬레이터 첫 실행용)
   sample add  시료 측정값 수동 입력
   quality set 품질 합격 여부
   manual-stop 운영자 수동 정지 시각
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from . import config as config_mod
 from . import db as db_mod
 from . import manual
+from . import sim as sim_mod
 from .mock import SCENARIOS
 from .models import MATERIALS, MODES, START_TRIGGERS
 from .replay import ReplayError, format_report, replay_report
@@ -45,6 +47,19 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--scenario", choices=sorted(SCENARIOS), default="normal", help="mock 전용")
     r.add_argument("--fast", action="store_true", help="mock 전용: 가상 시계로 대기 없이 실행")
     r.add_argument("--status-every", type=int, default=10, help="N 주기마다 상태 줄 출력(0=끔)")
+    # 실시간 시뮬레이터(모두 선택). 하나라도 주면 시뮬레이션 모드로 동작합니다.
+    r.add_argument("--water-l", type=float, default=None, help="물 투입량(L), 예: 10")
+    r.add_argument("--solute-g", type=float, default=None, help="용질 투입량(g), 예: 500")
+    r.add_argument("--control-mode", choices=sim_mod.CONTROL_MODES, default=None,
+                   help="fixed|rule|ai (시뮬레이션 기본 rule)")
+    r.add_argument("--speed-factor", type=float, default=None,
+                   help="실시간 배율(1x/5x/10x). 기본 1")
+    r.add_argument("--fixed-seconds", type=float, default=None,
+                   help="fixed 기준 운전 시간(초). 기본 {:.0f}".format(sim_mod.FIXED_SECONDS))
+
+    i = sub.add_parser("initdb", help="SQLite 스키마만 준비(웹앱 첫 실행용)")
+    i.add_argument("--db", required=True, help="만들거나 확인할 DB 경로")
+    i.add_argument("--json", action="store_true")
 
     def add_db_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--config", default=None, help="DB 경로를 읽을 설정 파일")
@@ -117,10 +132,29 @@ def cmd_run(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print("ERROR: 설정 파일을 읽을 수 없습니다: {}".format(exc), file=sys.stderr)
         return EXIT_CONFIG
+
+    sim = _build_sim(args)
+    if sim is not None and args.mode != "mock":
+        print("ERROR: --water-l/--solute-g/--control-mode/--speed-factor 는 --mode mock 전용입니다",
+              file=sys.stderr)
+        return EXIT_CONFIG
+    samples = args.samples
+    stop_grace = None  # type: Optional[float]
+    if sim is not None:
+        problems = sim_mod.validate(sim)
+        if problems:
+            print("ERROR: " + "; ".join(problems), file=sys.stderr)
+            return EXIT_CONFIG
+        interval = float(cfg["decision"]["interval_seconds"])
+        if samples == 0:
+            cap = sim.fixed_seconds if sim.control_mode == "fixed" else 180.0
+            samples = max(1, int(round(cap / interval)))
+        stop_grace = None if sim.control_mode == "fixed" else 6.0
+
     opts = RunOptions(mode=args.mode, material=args.material, batch_id=args.batch_id,
-                      start_trigger=args.start_trigger, arm_stop=args.arm_stop, samples=args.samples,
+                      start_trigger=args.start_trigger, arm_stop=args.arm_stop, samples=samples,
                       scenario=args.scenario, fast=args.fast, db_path=args.db,
-                      status_every=args.status_every)
+                      status_every=args.status_every, sim=sim, stop_grace_s=stop_grace)
     try:
         summary = run_batch(cfg, opts)
     except LiveGateError as exc:
@@ -136,6 +170,31 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("ERROR: {}: {}".format(type(exc).__name__, exc), file=sys.stderr)
         return EXIT_RUNTIME
     print("완료: batch={} 최종 상태={} 주기={}".format(summary.batch_id, summary.final_status, summary.cycles))
+    return EXIT_OK
+
+
+def _build_sim(args: argparse.Namespace) -> Optional[sim_mod.SimParams]:
+    """시뮬레이션 인자가 하나라도 있으면 SimParams 를 만듭니다(없으면 기존 동작)."""
+    given = (args.water_l, args.solute_g, args.control_mode, args.speed_factor, args.fixed_seconds)
+    if all(value is None for value in given):
+        return None
+    defaults = sim_mod.SimParams()
+    return sim_mod.SimParams(
+        water_l=defaults.water_l if args.water_l is None else args.water_l,
+        solute_g=defaults.solute_g if args.solute_g is None else args.solute_g,
+        control_mode=defaults.control_mode if args.control_mode is None else args.control_mode,
+        speed_factor=defaults.speed_factor if args.speed_factor is None else args.speed_factor,
+        fixed_seconds=(defaults.fixed_seconds if args.fixed_seconds is None else args.fixed_seconds),
+    )
+
+
+def cmd_initdb(args: argparse.Namespace) -> int:
+    con = db_mod.connect(args.db)
+    con.close()
+    if args.json:
+        _print_json({"ok": True, "db": args.db})
+    else:
+        print("DB 준비 완료: {}".format(args.db))
     return EXIT_OK
 
 
@@ -210,6 +269,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return cmd_run(args)
+    if args.command == "initdb":
+        return cmd_initdb(args)
     if args.command in ("sample", "quality") and args.action is None:
         parser.error("하위 명령이 필요합니다 (sample add / quality set)")
     if args.command in ("sample", "quality", "manual-stop"):
