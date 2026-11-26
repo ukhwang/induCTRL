@@ -402,7 +402,7 @@ function init() {
       ['제어 모드', MODE_LABELS[view.control_mode] ?? view.control_mode ?? '—'],
       [fixed ? '운전 시간 (FIXED)' : '판정 시각', clock(fixed ? (total.elapsed_s ?? 0) : (point.elapsed_s ?? 0))],
       ['총 수집 시간', clock(total.elapsed_s ?? view.elapsed_s ?? 0)],
-      ['에너지 (누적)', `${fmt(total.energy_wh ?? energy, 3)} Wh`],
+      [fixed ? '에너지 (누적)' : '에너지 (판정 시점)', `${fmt(energy, 3)} Wh`],
       ['잔여 불균일 (CV)', `${fmt(point.cv_pct, 2)} %`],
     ];
     el.result.hidden = false;

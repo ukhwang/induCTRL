@@ -605,7 +605,9 @@ async function poll() {
         : '<p class="placeholder" role="status">교반 데이터를 불러오는 중입니다.</p>';
     } else if (page === 'home' || page === 'live') updateLive();
   } finally {
-    setTimeout(poll, document.hidden ? 15000 : 2000);
+    // API 가 없는 정적 배포에서는 조회를 드물게 시도합니다.
+    const idle = document.hidden || (!snapshot && failures > 3);
+    setTimeout(poll, !snapshot && failures > 3 ? 60000 : idle ? 15000 : 2000);
   }
 }
 
