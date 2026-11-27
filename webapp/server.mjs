@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { normalizeEntry, checkPin, readManualBody } from './manual.mjs';
 import { createStore } from './store.mjs';
 import { createSimJob } from './sim.mjs';
+import { createCommandService, createLocalQueue } from './commands.mjs';
 
 const targetSeconds = 750;
 const fast = process.argv.includes('--fast');
@@ -19,6 +20,7 @@ const files = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/chart.js', ['chart.js', 'text/javascript; charset=utf-8']],
   ['/sim.js', ['sim.js', 'text/javascript; charset=utf-8']],
+  ['/live.js', ['live.js', 'text/javascript; charset=utf-8']],
   ['/engine.js', ['engine.js', 'text/javascript; charset=utf-8']],
   ['/ui.js', ['ui.js', 'text/javascript; charset=utf-8']],
 ]);
@@ -84,11 +86,15 @@ function getSnapshot() {
 const port = Number(process.env.PORT || 3000);
 const { STIR_SQLITE_DB: path, NEON_READ_URL: url, MIC_SOURCE_ID: source, NEON_WEB_WRITE_URL: writeUrl,
   WEB_ENTRY_PIN: pin, WEB_ORIGIN: origin } = process.env;
+const exhibitionPin = process.env.EXHIBITION_PIN ?? '';
+const micOnlineSeconds = Number(process.env.MIC_ONLINE_SECONDS || 20);
+const commandUrl = process.env.NEON_COMMAND_URL || url;
 const manualOrigin = URL.parse(origin ?? '');
 const validOrigin = manualOrigin && manualOrigin.origin === origin && (manualOrigin.protocol === 'https:' ||
   (manualOrigin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(manualOrigin.hostname)));
-if ((path && url) || (url && !source) || (writeUrl && (!url || !validOrigin || !/^\d{6,12}$/.test(pin ?? '')))) {
-  console.error('Check STIR_SQLITE_DB, NEON_READ_URL, MIC_SOURCE_ID and optional manual entry settings.');
+if ((path && url) || (url && !source) || (writeUrl && (!url || !validOrigin || !/^\d{6,12}$/.test(pin ?? ''))) ||
+  (exhibitionPin && !/^\d{4,12}$/.test(exhibitionPin))) {
+  console.error('Check STIR_SQLITE_DB, NEON_READ_URL, MIC_SOURCE_ID, optional manual entry and EXHIBITION_PIN settings.');
   process.exit(1);
 }
 
@@ -110,6 +116,13 @@ const store = dbPath || url ? createStore({ path: dbPath, url, source, writeUrl 
 const sim = dbPath && !url
   ? createSimJob({ dbPath, cwd: stirctlDir, python })
   : null;
+// 제어 큐: Neon 이 있으면 진짜 MIC 로, 없으면 로컬 시뮬레이터로 명령을 보냅니다.
+const control = url && commandUrl
+  ? createCommandService({ url: commandUrl, source, pin: exhibitionPin, micOnlineSeconds })
+  : sim
+    ? createLocalQueue({ sim, source, pin: exhibitionPin,
+      getBatch: (id) => store?.simStatus(id) ?? null })
+    : null;
 
 function sendJSON(res, status, body, head = false) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -162,6 +175,34 @@ const server = createServer(async (req, res) => {
       const batch = store && status.batch_id ? await store.simStatus(status.batch_id) : null;
       if (sim) sim.lastBatch = batch;
       sendJSON(res, 200, { ...status, batch }, req.method === 'HEAD');
+    } else if (route === '/api/command' && req.method === 'POST') {
+      if (!control) {
+        sendJSON(res, 503, { ok: false, error: 'control_disabled',
+          message: '이 서버에는 시뮬레이터나 DB 가 없습니다.' });
+        return;
+      }
+      const body = await readBody(req);
+      if (!body) {
+        sendJSON(res, 400, { ok: false, error: 'invalid', message: 'JSON 본문이 필요합니다.' });
+        return;
+      }
+      const result = await control.send(body, {
+        pin: req.headers['x-exhibition-pin'] ?? body.pin,
+        client: req.socket.remoteAddress ?? 'local',
+      });
+      sendJSON(res, result.status, result.body);
+    } else if (route === '/api/command') {
+      res.writeHead(405, { Allow: 'POST' }).end();
+    } else if (route === '/api/command/status') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { Allow: 'GET, HEAD' }).end();
+        return;
+      }
+      const state = control ? await control.status() : {
+        mode: 'sim_only', pin_required: false, mic: null, active: null, stop: null,
+        recent: [], batch: null, running: false, server_time: new Date().toISOString(),
+      };
+      sendJSON(res, 200, state, req.method === 'HEAD');
     } else if (route === '/api/manual' && writeUrl && req.method === 'POST') {
       if (req.headers.origin !== origin) {
         sendJSON(res, 403, { error: 'origin' });
@@ -182,7 +223,7 @@ const server = createServer(async (req, res) => {
       sendJSON(res, 201, { id: record.id });
     } else if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { Allow: 'GET, HEAD' }).end();
-    } else if (route === '/api/snapshot' || route === '/api/mock' && !store) {
+    } else if (route === '/api/snapshot' || route === '/api/live' || route === '/api/mock' && !store) {
       const snapshot = store ? await store.snapshot() : getSnapshot();
       const status = sim ? sim.status() : null;
       const id = status?.batch_id;
@@ -191,7 +232,8 @@ const server = createServer(async (req, res) => {
         simBatch = await store.simStatus(id).catch(() => null);
       }
       sendJSON(res, 200, { ...snapshot, sim_enabled: Boolean(sim),
-        sim_running: Boolean(status?.running), sim_config: status?.config ?? null, sim_batch: simBatch },
+        sim_running: Boolean(status?.running), sim_config: status?.config ?? null, sim_batch: simBatch,
+        control_enabled: Boolean(control), pin_required: Boolean(exhibitionPin) },
       req.method === 'HEAD');
     } else if (route === '/api/batch' && store) {
       const id = parsed.searchParams.get('id');
@@ -221,6 +263,7 @@ async function shutdown(signal) {
   if (closing) return;
   closing = true;
   if (sim) await sim.stop().catch(() => {});
+  try { await control?.close?.(); } catch { /* 이미 끊긴 풀 */ }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
   console.log(`induCTRL 종료(${signal})`);

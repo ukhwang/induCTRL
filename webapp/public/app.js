@@ -319,8 +319,13 @@ function renderLive() {
   manualId = undefined;
   const title = page === 'live' ? '실시간 교반 상태' : '교반 대시보드';
   if (!snapshot.live) {
-    main.innerHTML = `${header(title, 'MIC 배치 기록을 기다리는 중입니다.')}
-      <p class="panel placeholder">수신한 배치가 없습니다.</p>`;
+    const simOnly = snapshot.mode === 'sim_only';
+    main.innerHTML = `${header(title, simOnly
+        ? '아직 교반기 DB가 연결되지 않았습니다 — 위의 실시간 실험 패널은 그대로 동작합니다.'
+        : 'MIC 배치 기록을 기다리는 중입니다.')}
+      <p class="panel placeholder">${simOnly
+        ? 'DB와 MIC를 연결하면 방문객 폰에서 실제 교반기를 제어하고 센서 값을 바로 볼 수 있습니다.'
+        : '수신한 배치가 없습니다.'}</p>`;
     return;
   }
   statsSignature = '';
@@ -635,11 +640,12 @@ async function poll() {
     const hasNewRecording = recordings.size !== snapshot?.recordings.length;
     snapshot = { ...data, recordings: [...recordings.values()] };
     const mockData = data.mode === 'mock' || data.live?.mode === 'mock';
+    const simOnly = data.mode === 'sim_only';
     const mode = document.querySelector('.mode');
-    mode.textContent = mockData ? 'MOCK' : 'MIC';
+    mode.textContent = mockData ? 'MOCK' : simOnly ? 'SIM' : 'MIC';
     mode.hidden = false;
     document.querySelector('#data-mode').textContent = [
-      mockData ? '모의 데이터' : 'MIC 데이터',
+      mockData ? '모의 데이터' : simOnly ? '교반기 DB 미연결' : 'MIC 데이터',
       data.manual_enabled ? '웹 수동 기록 사용' : '읽기 전용',
     ].join(' · ');
     offline = false;

@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
   <script type="module" src="/sim.js"></script>
+  <script type="module" src="/live.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -24,6 +25,74 @@
       <span class="mode" hidden></span>
     </div>
   </header>
+
+  <section id="live-panel" class="shell live-panel" hidden aria-label="실제 교반기 제어">
+    <div class="live-head">
+      <div>
+        <div class="device">LIVE / 전시장 교반기</div>
+        <h2 class="live-title">버튼을 누르면 실제 교반기가 돌아갑니다</h2>
+      </div>
+      <span id="live-device" class="live-device" data-state="unknown" role="status">
+        <span class="dot" aria-hidden="true"></span><span id="live-device-text">연결 확인 중</span>
+      </span>
+    </div>
+
+    <div class="live-grid">
+      <form id="live-form" class="live-form" autocomplete="off">
+        <div class="sim-block">
+          <span class="label">실험 종류</span>
+          <div class="chip-row">
+            <label class="chip"><input type="radio" name="lmaterial" value="saltwater" checked><span>소금물 · 김치 염수</span></label>
+            <label class="chip"><input type="radio" name="lmaterial" value="caco3"><span>탄산칼슘 · 막걸리 침전물</span></label>
+          </div>
+        </div>
+
+        <label class="sim-field">
+          <span class="label">물 투입량 <output id="live-water-out">10 L</output></span>
+          <input id="live-water" type="range" min="2" max="30" step="1" value="10">
+        </label>
+        <label class="sim-field">
+          <span class="label">용질 투입량 <output id="live-solute-out">500 g</output></span>
+          <input id="live-solute" type="range" min="50" max="2000" step="50" value="500">
+        </label>
+
+        <div class="sim-block">
+          <span class="label">제어 모드</span>
+          <div class="segment" id="live-mode" role="group" aria-label="제어 모드">
+            <button type="button" data-mode="fixed">FIXED</button>
+            <button type="button" data-mode="rule" aria-pressed="true">RULE</button>
+            <button type="button" data-mode="ai">AI</button>
+          </div>
+        </div>
+
+        <label class="sim-field">
+          <span class="label">교반 세기 <output id="live-rpm-out">60 %</output></span>
+          <input id="live-rpm" type="range" min="10" max="100" step="5" value="60">
+        </label>
+
+        <label class="sim-field" id="live-pin-field" hidden>
+          <span class="label">운영 PIN</span>
+          <input id="live-pin" class="control" type="password" inputmode="numeric" maxlength="12" autocomplete="off">
+        </label>
+
+        <div class="live-actions">
+          <button id="live-start" class="control primary" type="submit">교반 시작</button>
+          <button id="live-stop" class="control danger" type="button">비상 정지</button>
+        </div>
+        <p id="live-note" class="sim-note" role="status"></p>
+      </form>
+
+      <div class="live-side">
+        <div class="live-state" id="live-state" data-kind="idle">
+          <span class="label">현재 상태</span>
+          <strong id="live-state-text">대기</strong>
+          <small id="live-state-detail">MIC 연결을 확인하고 있습니다.</small>
+        </div>
+        <div class="live-facts" id="live-facts"></div>
+        <ol class="live-history" id="live-history" aria-label="최근 명령"></ol>
+      </div>
+    </div>
+  </section>
 
   <section id="sim" class="shell sim" aria-label="실시간 실험 시뮬레이터" hidden>
     <div class="sim-head">

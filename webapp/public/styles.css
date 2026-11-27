@@ -128,6 +128,58 @@ tr:last-child td { border: 0; }
 .manual-form button { justify-self: start; }
 .manual-form button:disabled { opacity: .55; cursor: wait; }
 
+/* ── 전시장 실제 교반기 제어 ───────────────────────────────────────── */
+.live-panel { padding-block: 30px 4px; }
+.live-panel[hidden] { display: none; }
+.live-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.live-title { margin: 6px 0 0; font-size: clamp(20px, 2.6vw, 27px); letter-spacing: -.045em; }
+.live-device { display: inline-flex; align-items: center; gap: 8px; padding: 8px 13px; border-radius: 99px; background: #eceee8; color: #4d584f; font-size: 12.5px; font-weight: 750; white-space: nowrap; }
+.live-device .dot { background: #9aa79c; }
+.live-device[data-state="online"] { background: #dcecdd; color: #23492f; }
+.live-device[data-state="online"] .dot { background: #3f8455; animation: sim-pulse 1.6s ease-in-out infinite; }
+.live-device[data-state="offline"] { background: #f9eade; color: #8a4b16; }
+.live-device[data-state="offline"] .dot { background: #b95b26; }
+.live-grid { display: grid; grid-template-columns: minmax(280px, 1.15fr) minmax(240px, .85fr); gap: 14px; align-items: start; }
+.live-form { display: grid; align-content: start; gap: 12px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+/* .sim-field 는 display:grid 라서 [hidden] 만으로는 숨지 않습니다(PIN 입력칸). */
+.live-form .sim-field[hidden] { display: none; }
+.live-form .sim-field input,
+.live-form .chip-row,
+.live-form .segment { transition: opacity .25s ease; }
+.live-form.is-locked .sim-field input,
+.live-form.is-locked .chip-row,
+.live-form.is-locked .segment { opacity: .62; }
+.live-actions { display: flex; gap: 8px; margin-top: 2px; }
+.live-actions .control { flex: 1; min-height: 50px; font-size: 13.5px; }
+.live-actions .control:disabled { opacity: .5; cursor: not-allowed; }
+.live-actions .control.primary:not(:disabled):hover { background: #24463a; border-color: #24463a; }
+.live-actions .control.danger { flex: .72; background: #b23a1c; border-color: #b23a1c; color: #fff; font-weight: 750; }
+.live-actions .control.danger:not(:disabled):hover { background: #972f14; border-color: #972f14; }
+.live-actions .control.danger:disabled { background: #d8c7c0; border-color: #d8c7c0; color: #fff; }
+.sim-note[data-kind="ok"] { color: var(--green); }
+.sim-note[data-kind="error"],
+.sim-note[data-kind="locked"] { color: #a33a1c; }
+.sim-note[data-kind="stop"] { color: #8a4b16; }
+.live-side { display: grid; gap: 10px; }
+.live-state { display: grid; gap: 5px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); transition: background-color .3s ease, border-color .3s ease; }
+.live-state strong { font-size: 20px; letter-spacing: -.04em; }
+.live-state small { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.live-state[data-kind="running"] { background: #eaf0e8; border-color: #cfe0d2; }
+.live-state[data-kind="running"] strong { color: var(--green); }
+.live-state[data-kind="offline"] { background: #f9eade; border-color: #f0d9c4; }
+.live-state[data-kind="offline"] strong { color: #8a4b16; }
+.live-state[data-kind="pending"] strong,
+.live-state[data-kind="stop"] strong { color: #8a4b16; }
+.live-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.live-facts span { padding: 5px 9px; border-radius: 6px; background: #eef0ea; color: var(--muted); font: 650 11px ui-monospace, monospace; }
+.live-history { list-style: none; margin: 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); display: grid; gap: 7px; }
+.live-history li { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.live-history li[data-kind="empty"] { color: var(--muted); }
+.live-history li[data-kind="FAILED"],
+.live-history li[data-kind="CANCELED"] { color: #a33a1c; }
+.live-history li[data-kind="COMPLETED"] { color: var(--muted); }
+.live-history time { color: var(--muted); font: 11.5px ui-monospace, monospace; }
+
 /* ── 실시간 시뮬레이터 ─────────────────────────────────────────────── */
 .sim { padding-block: 30px 4px; }
 .sim[hidden] { display: none; }
@@ -275,6 +327,14 @@ tr:last-child td { border: 0; }
   .segment button { padding-inline: 14px; }
   input[type="range"] { height: 34px; }
   .sim-actions .control { min-height: 50px; }
+}
+
+@media (max-width: 900px) {
+  .live-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (pointer: coarse) {
+  .live-actions .control { min-height: 54px; font-size: 14.5px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

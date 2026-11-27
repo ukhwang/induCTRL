@@ -1,6 +1,12 @@
 import { stat } from 'node:fs/promises';
-import { DatabaseSync } from 'node:sqlite';
 import pg from 'pg';
+
+// node:sqlite 는 로컬 SQLite 를 읽을 때만 불러옵니다(Vercel 함수는 pg 만 씁니다).
+let sqliteModule;
+async function sqlite() {
+  sqliteModule ??= await import('node:sqlite');
+  return sqliteModule;
+}
 
 const { Pool } = pg;
 const displayChannels = ['rpm', 'conductivity', 'turbidity_top', 'turbidity_bottom'];
@@ -43,19 +49,20 @@ function query(table, columns, conditions, source, tail) {
   ];
 }
 
-function postgresPool(url) {
+function postgresPool(url, options = {}) {
   return new Pool({
     connectionString: url,
     max: 3,
+    ...options,
     connectionTimeoutMillis: 4000,
-    idleTimeoutMillis: 8000,
+    idleTimeoutMillis: options.idleTimeoutMillis ?? 8000,
     statement_timeout: 6000,
   });
 }
 
-function reader({ path, url, source }) {
+function reader({ path, url, source, poolOptions }) {
   if (url) {
-    const pool = postgresPool(url);
+    const pool = postgresPool(url, poolOptions);
     pool.on('error', () => console.error('Neon reader connection interrupted'));
     return async (work) => {
       const client = await pool.connect();
@@ -78,6 +85,7 @@ function reader({ path, url, source }) {
 
   return async (work) => {
     await stat(path);
+    const { DatabaseSync } = await sqlite();
     const db = new DatabaseSync(path, { readOnly: true, timeout: 1500 });
     try {
       db.exec('PRAGMA query_only=ON; BEGIN');
@@ -220,8 +228,8 @@ async function getRun(rows, batch, cloud) {
   };
 }
 
-export function createStore({ path, url, source, writeUrl }) {
-  const read = reader({ path, url, source });
+export function createStore({ path, url, source, writeUrl, poolOptions }) {
+  const read = reader({ path, url, source, poolOptions });
   const writer = writeUrl ? postgresPool(writeUrl) : null;
   writer?.on('error', () => console.error('Neon record writer connection interrupted'));
   return {

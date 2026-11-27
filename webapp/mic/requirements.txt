@@ -1,1 +1,4 @@
+# MIC 업로더·에이전트 공통
 psycopg2-binary==2.9.10
+# agent.py 가 아두이노 PWM 을 실제로 열 때만 필요합니다(--pwm-simulate/--no-pwm 이면 없어도 됩니다).
+pyserial==3.5

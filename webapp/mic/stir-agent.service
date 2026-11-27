@@ -1,0 +1,27 @@
+[Unit]
+Description=induCTRL stir agent (Neon command queue → stirctl + Arduino PWM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stir
+WorkingDirectory=/opt/inductrl/webapp
+# NEON_UPLOAD_URL, MIC_SOURCE_ID 는 관리자만 읽을 수 있는 파일에 둡니다.
+EnvironmentFile=/etc/stir-agent.env
+ExecStart=/opt/inductrl/.venv/bin/python /opt/inductrl/webapp/mic/agent.py \
+    --db /opt/stirctl/data/inductrl_readings.sqlite3 \
+    --config /opt/stirctl/config.json \
+    --stirctl-dir /opt/inductrl/inductrl_stirctl \
+    --mode observe \
+    --pwm-port /dev/ttyACM0 \
+    --with-upload \
+    --upload-state /var/lib/stir-upload/checkpoint.json
+Restart=always
+RestartSec=5
+# 종료 신호를 받으면 모터를 먼저 세우고 끝납니다.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

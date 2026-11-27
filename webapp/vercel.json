@@ -3,5 +3,9 @@
   "framework": null,
   "outputDirectory": "public",
   "trailingSlash": false,
-  "cleanUrls": true
+  "cleanUrls": true,
+  "regions": ["icn1"],
+  "functions": {
+    "api/**/*.mjs": { "maxDuration": 10 }
+  }
 }
