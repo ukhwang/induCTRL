@@ -191,7 +191,40 @@ def validate_config(cfg: Dict[str, Any]) -> List[str]:
                 for key in ("register_type", "address", "stopped_value"):
                     if fb.get(key) is None:
                         errors.append("stop_feedback.verified=true 인데 {} 가 null 입니다".format(key))
+    _validate_arduino_pwm(cfg, errors)
     return errors
+
+
+def _validate_arduino_pwm(cfg: Dict[str, Any], errors: List[str]) -> None:
+    """선택 항목 arduino_pwm. 없으면 통과하고, 있으면 형만 검사합니다."""
+    block = cfg.get("arduino_pwm")
+    if block is None:
+        return
+    p = "arduino_pwm"
+    if not isinstance(block, dict):
+        errors.append("arduino_pwm 는 객체 또는 생략이어야 합니다")
+        return
+    _bool(errors, block, "enabled", p)
+    if "port" not in block:
+        errors.append("arduino_pwm.port 항목이 없습니다 (사용하지 않으면 null)")
+    elif block["port"] is not None and (not isinstance(block["port"], str) or not block["port"].strip()):
+        errors.append("arduino_pwm.port 는 비어 있지 않은 문자열 또는 null 이어야 합니다")
+    if "baud" in block:
+        _num(errors, block, "baud", p, False, 300, False, 4000000)
+        if _is_number(block["baud"]) and not _is_int(block["baud"]):
+            errors.append("arduino_pwm.baud 는 정수여야 합니다")
+    if "command_timeout_s" in block:
+        _num(errors, block, "command_timeout_s", p, True, 0, True, 60)
+    if "reset_wait_s" in block:
+        _num(errors, block, "reset_wait_s", p, True, 0, False, 30)
+    if "ramp_step_pct" in block:
+        _num(errors, block, "ramp_step_pct", p, True, 1, False, 100)
+        if _is_number(block["ramp_step_pct"]) and not _is_int(block["ramp_step_pct"]):
+            errors.append("arduino_pwm.ramp_step_pct 는 정수여야 합니다")
+    if "ramp_interval_s" in block:
+        _num(errors, block, "ramp_interval_s", p, True, 0, True, 60)
+    if block.get("enabled") is True and block.get("port") is None:
+        errors.append("arduino_pwm.enabled=true 인데 port 가 null 입니다")
 
 
 def _validate_channel(name: str, ch: Dict[str, Any]) -> List[str]:

@@ -34,7 +34,8 @@
 │   ├── decision.py         # 완료 후보 판정 (범위·변동폭·coverage·유지시간)
 │   ├── processing.py       # 원시값 → 유효성 → RPM → 판정 (run 과 replay 가 공용)
 │   ├── stopctl.py          # 정지 확인 상태기계 (쓰기 없음)
-│   ├── actuator.py         # ★ 유일한 쓰기 코드: 배치당 write_coil 1회
+│   ├── actuator.py         # ★ 유일한 Modbus 쓰기 코드: 배치당 write_coil 1회
+│   ├── pwm_serial.py       # 아두이노 우노 PWM 속도·감속·정지 시리얼 제어 (Modbus 쓰기 없음)
 │   ├── mock.py             # 가상 센서·가상 모터·시험 시나리오
 │   ├── sim.py              # 실시간 시뮬레이터 물리 모델(물·용질 → 혼합·동력·에너지)
 │   ├── runner.py           # 배치 실행 루프 (mock / observe / live)
@@ -47,6 +48,7 @@
     ├── test_units.py       # 해석·RPM·판정 엔진·설정
     ├── test_scenarios.py   # mock 시나리오 전 과정
     ├── test_modes.py       # observe/live 경로, 액추에이터, live 시작 거부
+    ├── test_pwm_serial.py  # 아두이노 PWM 프로토콜·램프·정지·설정 (하드웨어 불필요)
     └── test_replay_cli.py  # replay, 수동 입력 CLI, 기존 test_local.py, 쓰기 코드 위치
 ```
 
@@ -269,14 +271,36 @@ DB 에 저장된 원시값(`readings.raw_json`)과 그 배치의 저장된 설�
 | `sim_runs` | 시뮬레이터 실험 조건(물·용질·농도·제어 모드·속도·Njs·FIXED 기준 에너지) |
 | `sim_metrics` | 주기별 시뮬레이터 계측(축동력 W, 누적 Wh, 잔여 불균일 CV%, 혼합도, 단계) |
 
-## 11. 테스트
+## 11. 아두이노 PWM 속도 제어 (선택)
+
+교반 모터를 **ADAM DO 릴레이 온/오프**가 아니라 **PWM 듀티로 속도를 바꾸며 감속·정지**하려면
+아두이노 우노 R3(`arduino/stir_pwm_controller/stir_pwm_controller.ino`)를 USB 로 연결해 씁니다.
+ADAM/Modbus 경로는 그대로 두고, 속도 제어만 아두이노가 맡는 구조입니다.
+
+- **배선·프로토콜·핀 상수·드라이버별 배선·현장 확인 항목**은 [arduino/README.md](../arduino/README.md) 에 정리했습니다.
+- MIC 쪽 모듈은 `inductrl/pwm_serial.py` 이고, 표준 라이브러리만으로 동작합니다(pyserial 은 실제 포트를 열 때만 필요).
+- 부팅 시 PWM 0(안전 정지), `STOP` 은 즉시 PWM 0 + Enable 비활성, `SET_PCT 0` 은 램프를 타는 감속 정지입니다.
+- `PwmStopActuator` 는 `actuator.py` 의 `StopActuator` 규격을 따르며 **배치당 STOP 1회, 재시도 없음**입니다. 기존 Modbus 정지와 함께 쓸 수 있습니다.
+- 설정은 `config.example.json` 의 선택 항목 `arduino_pwm`(`enabled` 기본 `false`, `port` 기본 `null`, `baud` `115200`)입니다. 이 항목을 지우거나 넣지 않아도 기존 로더·테스트는 그대로 동작합니다.
+
+```bash
+cd inductrl_stirctl
+python3 -m inductrl.pwm_serial --port /dev/ttyACM0 --ping
+python3 -m inductrl.pwm_serial --port /dev/ttyACM0 --pct 20
+python3 -m inductrl.pwm_serial --port /dev/ttyACM0 --ramp 20 60 --step 10 --interval 0.5
+python3 -m inductrl.pwm_serial --port /dev/ttyACM0 --stop
+python3 -m inductrl.pwm_serial --simulate --status          # 하드웨어 없이 연습
+```
+
+## 12. 테스트
 
 ```bash
 python -m unittest discover -s tests -t . -v   # 새 테스트 (하드웨어 불필요, 약 5~10초)
 python test_local.py                           # 기존 테스트
 ```
 
-새 테스트는 가상 시계를 써서 수 분짜리 배치를 몇 초 안에 돌립니다. 확인하는 항목: 정상 완료 이벤트 순서와 시각, min_stir 전 후보 없음, 범위 이탈, 수신 누락·coverage 부족과 유지시간 초기화, stale·범위 밖 값의 NULL 처리, 카운터 오버플로·리셋, 쓰기 실패(예외·타임아웃·연결 오류)와 재시도 0회, 쓰기 성공 후 RPM 미하강, 배치당 정지 요청 1회, observe 쓰기 0회, mock 에서 Modbus 클라이언트 미생성, live 시작 거부(각 조건별), replay 후보 시각 일치, 기존 test_local.py 통과, 쓰기 코드가 actuator.py 에만 있는지. pymodbus 가 설치되어 있으면 실제 pymodbus 클라이언트로 응답 없는 로컬 소켓에 정지 쓰기를 보내 **프레임이 1개만 전송됨**도 확인합니다.
+현재 154개(기존 83개 + PWM 시리얼 71개)가 통과합니다.
+새 테스트는 가상 시계를 써서 수 분짜리 배치를 몇 초 안에 돌립니다. 확인하는 항목: 정상 완료 이벤트 순서와 시각, min_stir 전 후보 없음, 범위 이탈, 수신 누락·coverage 부족과 유지시간 초기화, stale·범위 밖 값의 NULL 처리, 카운터 오버플로·리셋, 쓰기 실패(예외·타임아웃·연결 오류)와 재시도 0회, 쓰기 성공 후 RPM 미하강, 배치당 정지 요청 1회, observe 쓰기 0회, mock 에서 Modbus 클라이언트 미생성, live 시작 거부(각 조건별), replay 후보 시각 일치, 기존 test_local.py 통과, 쓰기 코드가 actuator.py 에만 있는지, 그리고 PWM 시리얼의 명령 문자열·범위 검증·응답 해석·PING 재시도·램프 단계·STOP 1회·설정 스키마 호환입니다. pymodbus 가 설치되어 있으면 실제 pymodbus 클라이언트로 응답 없는 로컬 소켓에 정지 쓰기를 보내 **프레임이 1개만 전송됨**도 확인합니다.
 
 ## 참고
 

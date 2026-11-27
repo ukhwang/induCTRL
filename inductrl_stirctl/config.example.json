@@ -113,5 +113,16 @@
     "address": null,
     "stopped_value": null,
     "verified": false
+  },
+
+  "_arduino_pwm_note": "선택 항목입니다. 아두이노 우노(PWM 속도 제어)를 쓰지 않으면 enabled=false 로 두세요. 포트는 현장에서 ls /dev/ttyACM* 로 확인해 채웁니다.",
+  "arduino_pwm": {
+    "enabled": false,
+    "port": null,
+    "baud": 115200,
+    "command_timeout_s": 1.0,
+    "reset_wait_s": 2.0,
+    "ramp_step_pct": 5,
+    "ramp_interval_s": 0.25
   }
 }
