@@ -69,9 +69,9 @@ Neon 환경변수가 없으면 `/api/command` 와 `/api/snapshot` 은 `{ mode: "
 
 ## 1-2. Vercel 설정 (환경변수 1~2개)
 
-지금 배포는 **정적 파일만** 올라가 있습니다. 서버리스 함수까지 쓰려면 프로젝트 설정을 한 번 바꿔야 합니다.
+서버리스 함수는 프로젝트의 **Root Directory 아래 `api/`** 에서만 찾습니다. 이 저장소는 함수가 `webapp/api/` 에 있으므로 **Root Directory 가 `webapp`** 이어야 합니다. (이미 그렇게 배포되어 있으면 그대로 두면 됩니다 — `https://indu-ctrl.vercel.app/api/command/status` 가 200 JSON 을 돌려주면 정상입니다.)
 
-1. Vercel 프로젝트 → **Settings → General → Root Directory** 를 `webapp` 으로 변경. (지금은 비어 있거나 저장소 루트입니다.)
+1. Vercel 프로젝트 → **Settings → General → Root Directory** 가 `webapp` 인지 확인. 비어 있거나 저장소 루트라면 `webapp` 으로 바꾸고 Redeploy 합니다.
 2. **Settings → Environment Variables** 에 추가:
 
    | 이름 | 값 | 필수 |
@@ -80,14 +80,14 @@ Neon 환경변수가 없으면 `/api/command` 와 `/api/snapshot` 은 `{ mode: "
    | `MIC_SOURCE_ID` | `mic-01` | 선택(기본값과 같으면 생략) |
    | `EXHIBITION_PIN` | 4~12자리 숫자 (예: `2468`) | 선택 — 넣으면 시작/정지에 PIN 이 필요합니다 |
 
-3. **Deployments → Redeploy**. Root Directory 를 바꿨으므로 새로 배포해야 반영됩니다.
+3. **Deployments → Redeploy**. 환경변수를 새로 넣으면 기존 배포에는 자동 반영되지 않으므로 한 번 다시 배포해야 합니다. (Root Directory 를 바꿨다면 그것도 함께 반영됩니다.)
 4. 확인: 브라우저에서 `https://indu-ctrl.vercel.app/api/command/status` 를 열어
 
    ```json
    { "mode": "neon", "mic": { "online": false, ... }, "active": null, ... }
    ```
 
-   가 나오면 성공입니다. `{"mode":"sim_only", ...}` 이면 `DATABASE_URL` 이 없거나 Root Directory 가 아직 루트입니다.
+   가 나오면 성공입니다. `{"mode":"sim_only", ...}` 이면 아직 `DATABASE_URL` 이 없거나 재배포하지 않은 것입니다. `404` 면 Root Directory 가 `webapp` 이 아닙니다.
 
 > **PIN 을 켤까?** 전시장에서 방문객이 직접 눌러 보게 하려면 **비워 두세요**. 운영자가 있을 때만 눌리게 하려면 `EXHIBITION_PIN` 을 넣고 그 숫자를 부스에 적어 둡니다. PIN 을 켜면 폰 화면에 입력칸이 생깁니다.
 
@@ -243,7 +243,7 @@ curl -X POST localhost:3000/api/command -H 'Content-Type: application/json' -d '
 - 무료 Hobby 플랜은 함수 호출·전송량에 월 한도가 있고, 한도를 넘으면 **자동 과금 없이** 다음 달까지 제한됩니다. 전시 하루(방문객 100명 × 2초 폴링 ≈ 20~30만 회)는 한도 안에서 충분합니다.
 - `DATABASE_URL` 이 없으면 함수는 200 + `{mode:"sim_only"}` 를 돌려주고 화면은 시뮬레이터로 폴백합니다. 정적 배포만 하던 기존 설정을 그대로 둬도 사이트는 깨지지 않습니다.
 
-> 저장소 루트에서 배포하던 예전 설정(`vercel.json` 의 `outputDirectory: webapp/public`)은 정적 전용입니다. 서버리스 함수는 프로젝트 루트의 `api/` 만 인식하므로, LIVE 기능을 쓰려면 Root Directory 를 `webapp` 으로 바꿔야 합니다.
+> Root Directory 가 저장소 루트인 배포(저장소 루트 `vercel.json` 의 `outputDirectory: webapp/public`)는 정적 전용입니다. 그 경우 화면은 그대로 뜨지만 `/api/*` 가 404 라 LIVE 패널이 숨겨지고 시뮬레이터만 동작합니다. LIVE 기능을 쓰려면 Root Directory 를 `webapp` 으로 바꿔야 합니다.
 
 ---
 
